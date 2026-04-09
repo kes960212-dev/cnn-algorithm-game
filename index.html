@@ -111,7 +111,8 @@
                         await setDoc(doc(db, 'lessons', code, 'groups', id), {
                             id, stage: STAGES.LOBBY, round: 1, imageData: Array(25).fill(0),
                             horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
-                            members: {}, capacity: groupsConfig[i], score: 0
+                            members: {}, capacity: groupsConfig[i], score: 0,
+                            horizDone: false, vertDone: false
                         });
                     }
                     setLessonCode(code); setView('teacher_dash'); 
@@ -367,9 +368,9 @@
                 if (capacity === 3) {
                     // 3인 모둠은 시스템이 카테고리와 정답을 자동 부여함
                     const p = EASY_PATTERNS[Math.floor(Math.random()*EASY_PATTERNS.length)];
-                    await updateDoc(gRef, { stage: STAGES.SCANNING, imageData: p.data, category: p.category, intendedAnswer: p.name });
+                    await updateDoc(gRef, { stage: STAGES.SCANNING, imageData: p.data, category: p.category, intendedAnswer: p.name, horizDone: false, vertDone: false });
                 } else {
-                    await updateDoc(gRef, { stage: STAGES.DRAWING, imageData: Array(25).fill(0), category: '', intendedAnswer: '' });
+                    await updateDoc(gRef, { stage: STAGES.DRAWING, imageData: Array(25).fill(0), category: '', intendedAnswer: '', horizDone: false, vertDone: false });
                 }
             };
             return (
@@ -407,7 +408,9 @@
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
                     stage: STAGES.SCANNING, 
                     category: category,
-                    intendedAnswer: answer.trim()
+                    intendedAnswer: answer.trim(),
+                    horizDone: false,
+                    vertDone: false
                 });
             };
 
@@ -442,8 +445,10 @@
             const f = isH ? FILTERS.horizontal : FILTERS.vertical;
             const field = isH ? 'horizScores' : 'vertScores';
             const colorClass = isH ? 'emerald' : 'rose';
+            const isDone = isH ? groupData.horizDone : groupData.vertDone;
 
             const scan = async () => {
+                if (isDone) return;
                 let s = 0;
                 for (let r=0; r<3; r++) for (let c=0; c<3; c++) {
                     const idx = (pos.y + r)*5 + (pos.x + c);
@@ -451,6 +456,17 @@
                 }
                 const newS = [...groupData[field]]; newS[pos.y*3+pos.x] = s;
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { [field]: newS });
+            };
+
+            const finalize = async () => {
+                const updates = isH ? { horizDone: true } : { vertDone: true };
+                const otherDone = isH ? groupData.vertDone : groupData.horizDone;
+                
+                // 만약 상대방 탐정이 이미 제출을 완료했다면, 함께 다음 단계로 넘어감
+                if (otherDone) {
+                    updates.stage = STAGES.GUESSING;
+                }
+                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), updates);
             };
 
             return (
@@ -473,11 +489,11 @@
 
                         <div className="bg-slate-50 p-6 rounded-3xl w-full max-w-sm">
                             <div className="grid grid-cols-3 gap-3 w-48 mx-auto">
-                                <div/><button onClick={() => setPos(p => ({...p, y:Math.max(0,p.y-1)}))} className="bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 active:translate-y-1 active:border-b-0 transition-all flex justify-center"><Icon name="chevron-up"/></button><div/>
-                                <button onClick={() => setPos(p => ({...p, x:Math.max(0,p.x-1)}))} className="bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 active:translate-y-1 active:border-b-0 transition-all flex justify-center"><Icon name="chevron-left"/></button>
-                                <button onClick={scan} className={`bg-${colorClass}-600 border-b-4 border-${colorClass}-800 text-white font-black text-lg rounded-2xl active:translate-y-1 active:border-b-0 transition-all flex items-center justify-center shadow-lg`}>SCAN</button>
-                                <button onClick={() => setPos(p => ({...p, x:Math.min(2,p.x+1)}))} className="bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 active:translate-y-1 active:border-b-0 transition-all flex justify-center"><Icon name="chevron-right"/></button>
-                                <div/><button onClick={() => setPos(p => ({...p, y:Math.min(2,p.y+1)}))} className="bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 active:translate-y-1 active:border-b-0 transition-all flex justify-center"><Icon name="chevron-down"/></button><div/>
+                                <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.max(0,p.y-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-up"/></button><div/>
+                                <button onClick={() => !isDone && setPos(p => ({...p, x:Math.max(0,p.x-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-left"/></button>
+                                <button onClick={scan} disabled={isDone} className={`bg-${colorClass}-600 border-b-4 border-${colorClass}-800 text-white font-black text-lg rounded-2xl transition-all flex items-center justify-center shadow-lg ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}>SCAN</button>
+                                <button onClick={() => !isDone && setPos(p => ({...p, x:Math.min(2,p.x+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-right"/></button>
+                                <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.min(2,p.y+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-down"/></button><div/>
                             </div>
                         </div>
                     </div>
@@ -492,7 +508,13 @@
                                 ))}
                             </div>
                         </div>
-                        <button onClick={() => updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { stage: STAGES.GUESSING })} className="w-full bg-slate-800 text-white py-6 rounded-[2rem] font-black text-2xl hover:bg-black transition-colors shadow-2xl mt-4">보고 완료 및 전송</button>
+                        {isDone ? (
+                            <div className="w-full bg-slate-100 text-slate-500 py-6 rounded-[2rem] font-black text-xl border-2 border-slate-200 mt-4 flex items-center justify-center gap-3">
+                                <Icon name="loader" className="animate-spin" /> 파트너 탐정을 기다리는 중...
+                            </div>
+                        ) : (
+                            <button onClick={finalize} className="w-full bg-slate-800 text-white py-6 rounded-[2rem] font-black text-2xl hover:bg-black transition-colors shadow-2xl mt-4">보고 완료 및 전송</button>
+                        )}
                     </div>
                 </div>
             );
@@ -564,7 +586,7 @@
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), {
                     round: groupData.round + 1, stage: STAGES.LOBBY, finalGuess: '', intendedAnswer: '', category: '',
                     imageData: Array(25).fill(0), horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
-                    members: newMembers, isCorrect: null
+                    members: newMembers, isCorrect: null, horizDone: false, vertDone: false
                 });
             };
 
