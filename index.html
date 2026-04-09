@@ -32,16 +32,15 @@
          * 나중에 GitHub Pages 등으로 실제 배포 시에는 아래 YOUR_... 부분에 
          * 본인의 Firebase 프로젝트 설정값을 입력해 주세요.
          */
-        const firebaseConfig = typeof __firebase_config !== 'undefined' 
-            ? JSON.parse(__firebase_config)
-            : {
-                apiKey: "YOUR_API_KEY",
-                authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-                projectId: "YOUR_PROJECT_ID",
-                storageBucket: "YOUR_PROJECT_ID.appspot.com",
-                messagingSenderId: "YOUR_SENDER_ID",
-                appId: "YOUR_APP_ID"
-            };
+        const firebaseConfig = {
+  apiKey: "AIzaSyBcci9JE7Py_WfxoJ-KKAXT8ckcCsjxNII",
+  authDomain: "cnn-algorithm.firebaseapp.com",
+  projectId: "cnn-algorithm",
+  storageBucket: "cnn-algorithm.firebasestorage.app",
+  messagingSenderId: "972364178713",
+  appId: "1:972364178713:web:57c0dee3ec67449c73d188",
+  measurementId: "G-7BCEGXC3JP"
+        };
 
         // Firebase 초기화
         const app = initializeApp(firebaseConfig);
