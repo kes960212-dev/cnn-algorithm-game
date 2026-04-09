@@ -225,7 +225,7 @@
         /* --- 교사 서브 컴포넌트 --- */
         function TeacherSetup({ onCreate, onBack }) {
             const [code, setCode] = useState('');
-            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]);
+            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]); // 초기: 4개 모둠, 각각 4명
             const [loading, setLoading] = useState(false);
             
             const handleCreate = async () => {
@@ -236,35 +236,39 @@
 
             const addGroup = () => setGroupsConfig([...groupsConfig, 4]);
             const removeGroup = () => setGroupsConfig(groupsConfig.slice(0, -1));
-            const toggleCapacity = (index) => {
+            const setCapacity = (index, cap) => {
                 const newConfig = [...groupsConfig];
-                newConfig[index] = newConfig[index] === 4 ? 3 : 4;
+                newConfig[index] = cap;
                 setGroupsConfig(newConfig);
             };
 
             return (
                 <div className="h-screen flex items-center justify-center p-6 bg-slate-900">
-                    <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl text-center">
+                    <div className="bg-white p-8 md:p-10 rounded-[3rem] w-full max-w-lg shadow-2xl text-center">
                         <h2 className="text-3xl font-black mb-8 font-jua">수업 개설하기</h2>
                         <input type="text" placeholder="수업 코드 (예: AI101)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center mb-6 outline-none focus:border-indigo-500" />
                         
                         <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl mb-4">
                             <span className="font-bold text-slate-500 ml-2">총 모둠 수</span>
-                            <div className="flex items-center gap-6 mr-2">
-                                <button onClick={removeGroup} disabled={groupsConfig.length <= 1} className="text-3xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm disabled:opacity-30">-</button>
-                                <span className="text-2xl font-black">{groupsConfig.length}</span>
+                            <div className="flex items-center gap-4 mr-2">
+                                <button onClick={removeGroup} disabled={groupsConfig.length <= 1} className="text-2xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm disabled:opacity-30">-</button>
+                                <span className="text-2xl font-black w-8">{groupsConfig.length}</span>
                                 <button onClick={addGroup} className="text-3xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm">+</button>
                             </div>
                         </div>
 
-                        <div className="bg-slate-50 p-4 rounded-2xl mb-6">
-                            <p className="text-sm font-bold text-slate-500 mb-3">각 모둠 인원 설정 (클릭하여 변경)</p>
-                            <div className="grid grid-cols-3 gap-2 max-h-32 overflow-y-auto p-1">
+                        {/* 명확해진 인원수 설정 UI */}
+                        <div className="bg-slate-50 p-4 rounded-2xl mb-6 border-2 border-slate-100">
+                            <p className="text-sm font-bold text-slate-500 mb-3">각 모둠별 인원 설정 (3명 / 4명)</p>
+                            <div className="grid grid-cols-2 gap-3 max-h-40 overflow-y-auto p-1">
                                 {groupsConfig.map((cap, i) => (
-                                    <button key={i} onClick={() => toggleCapacity(i)} 
-                                        className={`py-2 rounded-xl font-bold text-sm transition-all border-2 ${cap === 4 ? 'bg-indigo-100 text-indigo-600 border-transparent hover:border-indigo-400' : 'bg-rose-100 text-rose-600 border-rose-300 hover:border-rose-400'}`}>
-                                        {i+1}모둠: {cap}명
-                                    </button>
+                                    <div key={i} className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+                                        <span className="font-bold text-sm ml-2">{i+1}모둠</span>
+                                        <div className="flex gap-1">
+                                            <button onClick={() => setCapacity(i, 3)} className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${cap === 3 ? 'bg-rose-500 text-white shadow-md' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>3명</button>
+                                            <button onClick={() => setCapacity(i, 4)} className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${cap === 4 ? 'bg-indigo-500 text-white shadow-md' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>4명</button>
+                                        </div>
+                                    </div>
                                 ))}
                             </div>
                         </div>
