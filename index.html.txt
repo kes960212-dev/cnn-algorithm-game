@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 패턴 탐정단 - CNN 알고리즘 체험</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans KR', sans-serif; }
+        .font-jua { font-family: 'Jua', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        // --- Firebase Modules (CDN Import) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, collection, getDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+        /**
+         * [알림] 미리보기 환경에서는 자동으로 시스템 설정을 사용합니다.
+         * 나중에 GitHub Pages 등으로 실제 배포 시에는 아래 YOUR_... 부분에 
+         * 본인의 Firebase 프로젝트 설정값을 입력해 주세요.
+         */
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config)
+            : {
+                apiKey: "YOUR_API_KEY",
+                authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+                projectId: "YOUR_PROJECT_ID",
+                storageBucket: "YOUR_PROJECT_ID.appspot.com",
+                messagingSenderId: "YOUR_SENDER_ID",
+                appId: "YOUR_APP_ID"
+            };
+
+        // Firebase 초기화
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // Canvas 환경 대응을 위한 ID 및 경로 설정
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'cnn-detective-game';
+        
+        // Firestore 경로 헬퍼 (Canvas 환경은 특정 경로 규칙을 따름)
+        const getCollRef = (name) => {
+            return typeof __app_id !== 'undefined'
+                ? collection(db, 'artifacts', appId, 'public', 'data', name)
+                : collection(db, name);
+        };
+        const getDocRef = (collName, docId) => {
+            return typeof __app_id !== 'undefined'
+                ? doc(db, 'artifacts', appId, 'public', 'data', collName, docId)
+                : doc(db, collName, docId);
+        };
+
+        const { useState, useEffect, useMemo } = React;
+
+        // --- 상항 및 데이터 정의 ---
+        const GRID_SIZE = 5;
+        const FILTER_SIZE = 3;
+        const FILTERS = {
+            horizontal: [[0, 0, 0], [1, 1, 1], [0, 0, 0]],
+            vertical: [[0, 1, 0], [0, 1, 0], [0, 1, 0]]
+        };
+        const ROLE_LIST = ['그림 대장', '가로 탐정', '세로 탐정', '정답 대장'];
+        const STAGES = { LOBBY: 'lobby', DRAWING: 'drawing', SCANNING: 'scanning', GUESSING: 'guessing', FINISHED: 'finished' };
+        const EASY_PATTERNS = [
+            { name: 'ㄱ', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1] },
+            { name: 'ㄴ', data: [1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,1] },
+            { name: 'ㅁ', data: [1,1,1,1,1, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 1,1,1,1,1] },
+            { name: '0', data: [0,1,1,1,0, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 0,1,1,1,0] },
+            { name: '1', data: [0,0,1,0,0, 0,1,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,1,1,1,0] },
+            { name: '7', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,1,0, 0,0,1,0,0, 0,0,1,0,0] }
+        ];
+
+        // --- 아이콘 컴포넌트 ---
+        const Icon = ({ name, size = 24, className = "" }) => {
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        // --- 메인 앱 컴포넌트 ---
+        function App() {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('main'); 
+            const [lessonCode, setLessonCode] = useState('');
+            const [groupId, setGroupId] = useState(null);
+            const [lessonData, setLessonData] = useState(null);
+            const [groupData, setGroupData] = useState(null);
+            const [loading, setLoading] = useState(false);
+
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (e) {
+                        console.error("Firebase Auth Error: API Key가 올바르지 않거나 익명 로그인이 활성화되지 않았을 수 있습니다.", e);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => { 
+                if (window.lucide) {
+                    window.lucide.createIcons(); 
+                }
+            }, [view, groupData?.stage]);
+
+            useEffect(() => {
+                if (!user || !lessonCode || view === 'main') return;
+                const unsubscribe = onSnapshot(getDocRef('lessons', lessonCode), (snap) => {
+                    if (snap.exists()) setLessonData(snap.data());
+                }, (err) => console.error("Firestore Lesson Snapshot Error:", err));
+                return () => unsubscribe();
+            }, [user, lessonCode, view]);
+
+            useEffect(() => {
+                if (!user || !lessonCode || !groupId || view !== 'student_game') return;
+                const unsubscribe = onSnapshot(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), (snap) => {
+                    if (snap.exists()) setGroupData(snap.data());
+                }, (err) => console.error("Firestore Group Snapshot Error:", err));
+                return () => unsubscribe();
+            }, [user, lessonCode, groupId, view]);
+
+            const createLesson = async (code, count) => {
+                if (!user) return;
+                setLoading(true);
+                try {
+                    await setDoc(getDocRef('lessons', code), { code, groupCount: count, createdAt: Date.now() });
+                    for (let i = 1; i <= count; i++) {
+                        const id = `G${i}`;
+                        const groupRef = doc(db, ...getDocRef('lessons', code).path.split('/'), 'groups', id);
+                        await setDoc(groupRef, {
+                            id, stage: STAGES.LOBBY, round: 1, imageData: Array(25).fill(0),
+                            horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
+                            members: {}, category: 'alphabet'
+                        });
+                    }
+                    setLessonCode(code); setView('teacher_dash'); 
+                } catch (e) {
+                    console.error("Lesson Creation Error:", e);
+                    alert("수업 생성에 실패했습니다. Firebase 설정을 확인해주세요.");
+                }
+                setLoading(false);
+            };
+
+            const joinGroup = async (code, gId) => {
+                if (!user) return;
+                try {
+                    const gRef = doc(db, ...getDocRef('lessons', code).path.split('/'), 'groups', gId);
+                    const snap = await getDoc(gRef);
+                    if (!snap.exists()) return;
+                    const data = snap.data();
+                    const members = data.members || {};
+                    if (!members[user.uid]) {
+                        if (Object.keys(members).length >= 4) { alert("정원이 찼습니다."); return; }
+                        const usedIdx = Object.values(members).map(m => m.baseIndex);
+                        let freeIdx = 0; while (usedIdx.includes(freeIdx)) freeIdx++;
+                        await updateDoc(gRef, { [`members.${user.uid}`]: { uid: user.uid, baseIndex: freeIdx } });
+                    }
+                    setLessonCode(code); setGroupId(gId); setView('student_game');
+                } catch (e) {
+                    console.error("Group Join Error:", e);
+                }
+            };
+
+            const getMyRole = () => {
+                if (!groupData || !user || !groupData.members?.[user.uid]) return null;
+                const mCount = Object.keys(groupData.members).length;
+                const bIdx = groupData.members[user.uid].baseIndex;
+                const rd = groupData.round || 1;
+                if (mCount === 3) {
+                    return ['가로 탐정', '세로 탐정', '정답 대장'][(bIdx + rd - 1) % 3];
+                }
+                return ROLE_LIST[(bIdx + rd - 1) % 4];
+            };
+
+            if (view === 'main') return (
+                <div className="h-screen flex flex-col items-center justify-center bg-indigo-600 text-white p-6 text-center">
+                    <Icon name="brain-circuit" size={100} className="mb-6" />
+                    <h1 className="text-5xl font-black mb-12 font-jua tracking-tighter">AI 패턴 탐정단 v2</h1>
+                    <div className="flex flex-col sm:flex-row gap-6 w-full max-w-xl">
+                        <button onClick={() => setView('teacher_setup')} className="flex-1 bg-white text-indigo-600 py-8 rounded-[2rem] font-black text-2xl shadow-xl hover:scale-105 transition-transform">선생님 메뉴</button>
+                        <button onClick={() => setView('student_join')} className="flex-1 bg-indigo-900 text-indigo-100 py-8 rounded-[2rem] font-black text-2xl shadow-xl hover:scale-105 transition-transform">학생 입장</button>
+                    </div>
+                </div>
+            );
+
+            if (view === 'teacher_setup') return <TeacherSetup onCreate={createLesson} onBack={() => setView('main')} loading={loading} />;
+            if (view === 'teacher_dash') return <TeacherDashboard lessonCode={lessonCode} onBack={() => setView('main')} db={db} getDocRef={getDocRef} />;
+            if (view === 'student_join') return <StudentJoin onJoin={joinGroup} onBack={() => setView('main')} db={db} getDocRef={getDocRef} />;
+
+            if (view === 'student_game' && groupData) {
+                const myRole = getMyRole();
+                return (
+                    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+                        <header className="max-w-5xl mx-auto flex justify-between items-center mb-6 border-b pb-4">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-indigo-600 p-2 rounded-xl text-white"><Icon name="brain-circuit" size={24} /></div>
+                                <div>
+                                    <h1 className="text-xl font-black">{groupId} 모둠 <span className="text-indigo-600">Round {groupData.round}</span></h1>
+                                    <p className="text-xs font-bold text-slate-400">나의 역할: <span className="text-indigo-600 underline font-black">{myRole || '대기 중'}</span></p>
+                                </div>
+                            </div>
+                            <button onClick={() => setView('main')} className="text-slate-400 font-bold text-sm">수업 나가기</button>
+                        </header>
+                        <main className="max-w-5xl mx-auto">
+                            {groupData.stage === STAGES.LOBBY && <LobbyView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} getDocRef={getDocRef} />}
+                            {groupData.stage === STAGES.DRAWING && (myRole === '그림 대장' ? <LeaderView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} getDocRef={getDocRef} /> : <Waiting text="그림 대장이 비밀 패턴을 설계하고 있습니다..." />)}
+                            {groupData.stage === STAGES.SCANNING && (['가로 탐정', '세로 탐정'].includes(myRole) ? <DetectiveView role={myRole} groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} getDocRef={getDocRef} /> : <Waiting text="탐정들이 특징을 분석 중입니다..." />)}
+                            {groupData.stage === STAGES.GUESSING && (myRole === '정답 대장' ? <AnswererView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} getDocRef={getDocRef} /> : <Waiting text="정답 대장이 분석 중입니다..." />)}
+                            {groupData.stage === STAGES.FINISHED && <ResultView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} getDocRef={getDocRef} />}
+                        </main>
+                    </div>
+                );
+            }
+            return null;
+        }
+
+        function TeacherSetup({ onCreate, onBack, loading }) {
+            const [code, setCode] = React.useState('');
+            const [count, setCount] = React.useState(4);
+            return (
+                <div className="h-screen flex items-center justify-center bg-slate-900 p-6">
+                    <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
+                        <h2 className="text-3xl font-black mb-8 text-center">수업 개설</h2>
+                        <div className="space-y-6 text-center">
+                            <input type="text" placeholder="수업 코드 (예: AI101)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center" />
+                            <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl">
+                                <span className="font-bold text-slate-500">모둠 수</span>
+                                <div className="flex-1 flex justify-center gap-6">
+                                    <button onClick={() => setCount(Math.max(1, count - 1))} className="text-2xl font-black">-</button>
+                                    <span className="text-2xl font-black">{count}</span>
+                                    <button onClick={() => setCount(count + 1)} className="text-2xl font-black">+</button>
+                                </div>
+                            </div>
+                            <button onClick={() => onCreate(code, count)} disabled={!code || loading} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-xl">
+                                {loading ? '생성 중...' : '수업 시작하기'}
+                            </button>
+                            <button onClick={onBack} className="w-full text-slate-400 font-bold">취소</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function TeacherDashboard({ lessonCode, db, getDocRef }) {
+            const [groups, setGroups] = React.useState([]);
+            useEffect(() => {
+                const groupPath = doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', 'temp').parent;
+                const unsubscribe = onSnapshot(groupPath, (snap) => {
+                    setGroups(snap.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
+                });
+                return () => unsubscribe();
+            }, []);
+            return (
+                <div className="min-h-screen bg-slate-100 p-8">
+                    <h1 className="text-3xl font-black mb-10 flex items-center gap-3"><Icon name="layout-dashboard" /> 실시간 모니터링: {lessonCode}</h1>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                        {groups.map(g => (
+                            <div key={g.id} className="bg-white p-6 rounded-[2rem] shadow-sm">
+                                <div className="flex justify-between font-black mb-2"><span>{g.id} 모둠</span><span>R{g.round}</span></div>
+                                <div className="text-xs font-bold text-indigo-500 mb-4 uppercase">{g.stage}</div>
+                                <div className="grid grid-cols-5 gap-0.5 w-fit mx-auto bg-slate-50 p-2 rounded-lg">
+                                    {g.imageData?.map((v, i) => <div key={i} className={`w-3 h-3 rounded-sm ${v === 1 ? 'bg-slate-800' : 'bg-white border-[0.5px]'}`} />)}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function StudentJoin({ onJoin, onBack, db, getDocRef }) {
+            const [code, setCode] = React.useState('');
+            const [step, setStep] = React.useState(1);
+            const [available, setAvailable] = React.useState([]);
+            const check = async () => {
+                try {
+                    const s = await getDoc(getDocRef('lessons', code));
+                    if (s.exists()) {
+                        const groupPath = doc(db, ...getDocRef('lessons', code).path.split('/'), 'groups', 'temp').parent;
+                        const g = await getDocs(groupPath);
+                        setAvailable(g.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
+                        setStep(2);
+                    } else alert("없는 코드입니다.");
+                } catch (e) { console.error(e); }
+            };
+            return (
+                <div className="h-screen flex items-center justify-center bg-indigo-600 p-6">
+                    <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
+                        {step === 1 ? (
+                            <div className="text-center">
+                                <h2 className="text-3xl font-black mb-8">수업 참여</h2>
+                                <input type="text" placeholder="수업 코드" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center mb-6" />
+                                <button onClick={check} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-xl">모둠 찾기</button>
+                                <button onClick={onBack} className="mt-4 text-slate-400 font-bold block w-full">뒤로</button>
+                            </div>
+                        ) : (
+                            <div>
+                                <h2 className="text-2xl font-black mb-6 text-center">모둠 선택</h2>
+                                <div className="grid grid-cols-2 gap-3 mb-6">
+                                    {available.map(g => (
+                                        <button key={g.id} onClick={() => onJoin(code, g.id)} className="bg-slate-50 p-4 rounded-2xl hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-600 transition-all font-bold">
+                                            {g.id} 모둠<br/><span className="text-xs text-slate-400">{Object.keys(g.members || {}).length}/4 명</span>
+                                        </button>
+                                    ))}
+                                </div>
+                                <button onClick={() => setStep(1)} className="text-slate-400 font-bold w-full text-center">이전 단계</button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function LobbyView({ groupData, lessonCode, groupId, db, getDocRef }) {
+            const start = async () => {
+                const mCount = Object.keys(groupData.members).length;
+                const gRef = doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId);
+                if (mCount === 3) {
+                    const p = EASY_PATTERNS[Math.floor(Math.random()*EASY_PATTERNS.length)];
+                    await updateDoc(gRef, { stage: 'scanning', imageData: p.data, category: '자동 생성(쉬움)' });
+                } else {
+                    await updateDoc(gRef, { stage: 'drawing', imageData: Array(25).fill(0) });
+                }
+            };
+            return (
+                <div className="bg-white p-12 rounded-[3rem] shadow-sm text-center">
+                    <h2 className="text-3xl font-black mb-10">대기실</h2>
+                    <div className="flex justify-center gap-6 mb-12">
+                        {Object.values(groupData.members || {}).map((_, i) => (
+                            <div key={i} className="w-16 h-16 bg-indigo-100 rounded-2xl flex items-center justify-center text-indigo-600"><Icon name="user" /></div>
+                        ))}
+                    </div>
+                    <button onClick={start} className="bg-indigo-600 text-white px-12 py-5 rounded-2xl font-black text-2xl hover:bg-indigo-700 shadow-xl">게임 시작</button>
+                </div>
+            );
+        }
+
+        function LeaderView({ groupData, lessonCode, groupId, db, getDocRef }) {
+            const toggle = async (i) => {
+                const newData = [...groupData.imageData];
+                newData[i] = newData[i] === 0 ? 1 : 0;
+                await updateDoc(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), { imageData: newData });
+            };
+            return (
+                <div className="bg-white p-10 rounded-[3rem] shadow-sm text-center">
+                    <h2 className="text-2xl font-black mb-8">비밀 패턴 설계</h2>
+                    <div className="grid grid-cols-5 gap-2 p-4 bg-slate-50 rounded-[2rem] inline-grid mb-10">
+                        {groupData.imageData.map((v, i) => (
+                            <button key={i} onClick={() => toggle(i)} className={`w-12 h-12 md:w-16 md:h-16 rounded-xl border-2 ${v === 1 ? 'bg-slate-800' : 'bg-white'}`} />
+                        ))}
+                    </div>
+                    <button onClick={() => updateDoc(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), { stage: 'scanning' })} className="bg-indigo-600 text-white px-12 py-5 rounded-2xl font-black text-xl flex items-center gap-2 mx-auto"><Icon name="send" /> 출제하기</button>
+                </div>
+            );
+        }
+
+        function DetectiveView({ role, groupData, lessonCode, groupId, db, getDocRef }) {
+            const [pos, setPos] = React.useState({ x: 0, y: 0 });
+            const isH = role === '가로 탐정';
+            const f = isH ? FILTERS.horizontal : FILTERS.vertical;
+            const field = isH ? 'horizScores' : 'vertScores';
+            const scan = async () => {
+                let s = 0;
+                for (let r=0; r<3; r++) for (let c=0; c<3; c++) {
+                    const idx = (pos.y + r)*5 + (pos.x + c);
+                    if (groupData.imageData[idx] === 1 && f[r][c] === 1) s++;
+                }
+                const newS = [...groupData[field]]; newS[pos.y*3+pos.x] = s;
+                await updateDoc(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), { [field]: newS });
+            };
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="bg-white p-8 rounded-[3rem] shadow-sm text-center">
+                        <h3 className="font-black mb-6 text-xl">{role} 스캔</h3>
+                        <div className="relative inline-block bg-slate-100 p-4 rounded-3xl mb-8">
+                            <div className="grid grid-cols-5 gap-2">
+                                {groupData.imageData.map((v, i) => <div key={i} className={`w-10 h-10 border flex items-center justify-center font-bold ${v === 1 ? 'bg-slate-700 text-white' : 'bg-white'}`}>{v}</div>)}
+                            </div>
+                            <div className={`absolute border-4 ${isH ? 'border-emerald-500 bg-emerald-50/30' : 'border-rose-500 bg-rose-50/30'} pointer-events-none transition-all rounded-2xl`} style={{ width: 144, height: 144, left: 16+pos.x*48, top: 16+pos.y*48 }}></div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 w-36 mx-auto">
+                            <div/><button onClick={() => setPos(p => ({...p, y:Math.max(0,p.y-1)}))} className="bg-slate-100 p-3 rounded">▲</button><div/>
+                            <button onClick={() => setPos(p => ({...p, x:Math.max(0,p.x-1)}))} className="bg-slate-100 p-3 rounded">◀</button>
+                            <button onClick={scan} className="bg-indigo-600 text-white font-bold rounded">SCAN</button>
+                            <button onClick={() => setPos(p => ({...p, x:Math.min(2,p.x+1)}))} className="bg-slate-100 p-3 rounded">▶</button>
+                            <div/><button onClick={() => setPos(p => ({...p, y:Math.min(2,p.y+1)}))} className="bg-slate-100 p-3 rounded">▼</button><div/>
+                        </div>
+                    </div>
+                    <div className="bg-white p-8 rounded-[3rem] shadow-sm text-center flex flex-col items-center">
+                        <h3 className="font-black mb-6 text-xl">점수판</h3>
+                        <div className="grid grid-cols-3 gap-3 p-4 bg-slate-50 rounded-3xl mb-8">
+                            {groupData[field].map((s, i) => <div key={i} className={`w-16 h-16 flex items-center justify-center font-black text-2xl rounded-2xl ${s>0 ? (isH ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white') : 'bg-white'}`}>{s}</div>)}
+                        </div>
+                        <button onClick={() => updateDoc(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), { stage: 'guessing' })} className="w-full bg-slate-800 text-white py-4 rounded-2xl font-bold">보고하기</button>
+                    </div>
+                </div>
+            );
+        }
+
+        function AnswererView({ groupData, lessonCode, groupId, db, getDocRef }) {
+            const [g, setG] = React.useState('');
+            const submit = async () => await updateDoc(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), { stage: 'finished', finalGuess: g });
+            return (
+                <div className="space-y-8">
+                    <div className="grid grid-cols-2 gap-6">
+                        <div className="bg-white p-6 rounded-3xl text-center"><p className="font-bold text-emerald-500 mb-2">가로 특징</p>
+                            <div className="grid grid-cols-3 gap-2 inline-grid"> {groupData.horizScores.map((s,i)=><div key={i} className={`w-10 h-10 flex items-center justify-center rounded-lg font-bold ${s>0?'bg-emerald-500 text-white':'bg-slate-100'}`}>{s}</div>)} </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-3xl text-center"><p className="font-bold text-rose-500 mb-2">세로 특징</p>
+                            <div className="grid grid-cols-3 gap-2 inline-grid"> {groupData.vertScores.map((s,i)=><div key={i} className={`w-10 h-10 flex items-center justify-center rounded-lg font-bold ${s>0?'bg-rose-500 text-white':'bg-slate-100'}`}>{s}</div>)} </div>
+                        </div>
+                    </div>
+                    <div className="bg-white p-10 rounded-[3rem] shadow-xl text-center">
+                        <h3 className="text-2xl font-black mb-6">최종 추론</h3>
+                        <input type="text" value={g} onChange={e=>setG(e.target.value)} className="w-full p-4 border rounded-2xl mb-6 text-center text-xl font-bold" placeholder="정답 입력" />
+                        <button onClick={submit} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold">제출</button>
+                    </div>
+                </div>
+            );
+        }
+
+        function ResultView({ groupData, lessonCode, groupId, db, getDocRef }) {
+            const next = async () => {
+                await updateDoc(doc(db, ...getDocRef('lessons', lessonCode).path.split('/'), 'groups', groupId), {
+                    round: groupData.round + 1, stage: 'lobby', finalGuess: '',
+                    imageData: Array(25).fill(0), horizScores: Array(9).fill(0), vertScores: Array(9).fill(0)
+                });
+            };
+            return (
+                <div className="bg-white p-12 rounded-[3rem] text-center shadow-sm">
+                    <h2 className="text-4xl font-black text-indigo-600 mb-10 text-center">정답 발표!</h2>
+                    <div className="flex justify-center gap-10 mb-10">
+                        <div className="grid grid-cols-5 gap-1 bg-slate-50 p-4 rounded-xl"> {groupData.imageData.map((v,i)=><div key={i} className={`w-6 h-6 rounded ${v===1?'bg-slate-800':'bg-white'}`} />)} </div>
+                        <div className="flex flex-col justify-center"> <p className="text-slate-400 font-bold">탐정들의 추리</p> <p className="text-5xl font-black">{groupData.finalGuess}</p> </div>
+                    </div>
+                    <button onClick={next} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-bold mx-auto">다음 라운드</button>
+                </div>
+            );
+        }
+
+        function Waiting({ text }) {
+            return (
+                <div className="bg-white p-20 rounded-[3rem] text-center italic text-slate-300 text-xl font-bold">
+                    <Icon name="refresh-ccw" className="animate-spin mx-auto mb-6" size={48} /> {text}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
