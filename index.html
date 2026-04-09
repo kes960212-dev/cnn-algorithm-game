@@ -49,7 +49,7 @@
         const ROLE_INFO = {
             '그림 대장': {
                 icon: 'pen-tool', color: 'text-blue-600', bg: 'bg-blue-50', desc: '비밀 패턴 설계자',
-                manual: ['5x5 격자에 나만 아는 그림을 그리세요.', '알파벳, 숫자, 한글 중 모양을 선택하세요.', '[출제하기] 버튼을 누르면 전달됩니다.']
+                manual: ['먼저 어떤 종류의 글자를 그릴지 고르세요.', '주어진 보기 중에서 모양을 선택하세요.', '선택한 모양을 5x5 격자에 그리고 출제하세요!']
             },
             '가로 탐정': {
                 icon: 'search', color: 'text-emerald-600', bg: 'bg-emerald-50', desc: '가로 특징 추출 요원',
@@ -138,7 +138,6 @@
                 } catch (e) { console.error(e); }
             };
 
-            // 역할은 baseIndex를 그대로 참조하여 랜덤 섞기를 지원함
             const getMyRole = () => {
                 if (!groupData || !user || !groupData.members?.[user.uid]) return null;
                 const capacity = groupData.capacity || 4;
@@ -226,7 +225,7 @@
         /* --- 교사 서브 컴포넌트 --- */
         function TeacherSetup({ onCreate, onBack }) {
             const [code, setCode] = useState('');
-            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]); // 초기: 4개 모둠, 각각 4명
+            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]); 
             const [loading, setLoading] = useState(false);
             
             const handleCreate = async () => {
@@ -258,7 +257,6 @@
                             </div>
                         </div>
 
-                        {/* 명확해진 인원수 설정 UI */}
                         <div className="bg-slate-50 p-4 rounded-2xl mb-6 border-2 border-slate-100">
                             <p className="text-sm font-bold text-slate-500 mb-3">각 모둠별 인원 설정 (3명 / 4명)</p>
                             <div className="grid grid-cols-2 gap-3 max-h-40 overflow-y-auto p-1">
@@ -366,7 +364,6 @@
             const start = async () => {
                 const gRef = doc(db, 'lessons', lessonCode, 'groups', groupId);
                 if (capacity === 3) {
-                    // 3인 모둠은 시스템이 카테고리와 정답을 자동 부여함
                     const p = EASY_PATTERNS[Math.floor(Math.random()*EASY_PATTERNS.length)];
                     await updateDoc(gRef, { stage: STAGES.SCANNING, imageData: p.data, category: p.category, intendedAnswer: p.name, horizDone: false, vertDone: false });
                 } else {
@@ -392,49 +389,86 @@
             );
         }
 
+        // --- 그림 대장 뷰: 카테고리 & 모양 선택 UI 추가 ---
         function LeaderView({ groupData, lessonCode, groupId, db }) {
             const [category, setCategory] = useState('');
             const [answer, setAnswer] = useState('');
 
+            // 선택 가능한 쉬운 패턴 목록
+            const PATTERN_OPTIONS = {
+                '한글': ['ㄱ', 'ㄴ', 'ㄷ', 'ㅁ', 'ㅏ', 'ㅓ', 'ㅜ', 'ㅗ'],
+                '알파벳': ['L', 'T', 'I', 'H', 'E', 'F', 'C'],
+                '숫자': ['1', '2', '3', '7', '0']
+            };
+
             const toggle = async (i) => {
+                if (!answer) return alert("먼저 그릴 모양을 위에서 선택해주세요!");
                 const newData = [...groupData.imageData]; 
                 newData[i] = newData[i] === 0 ? 1 : 0;
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { imageData: newData });
             };
 
             const submit = async () => {
-                if (!category) return alert("카테고리를 선택해주세요!");
-                if (!answer.trim()) return alert("자신이 그린 모양의 정답을 적어주세요!");
+                if (!category || !answer) return alert("카테고리와 그릴 모양을 모두 선택해야 출제할 수 있습니다.");
+                
+                const drawnCount = groupData.imageData.filter(v => v === 1).length;
+                if (drawnCount < 3) return alert("그림을 너무 적게 그렸어요! 특징이 나타나게 조금 더 그려주세요.");
+
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
                     stage: STAGES.SCANNING, 
                     category: category,
-                    intendedAnswer: answer.trim(),
+                    intendedAnswer: answer,
                     horizDone: false,
                     vertDone: false
                 });
             };
 
             return (
-                <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-sm text-center h-full flex flex-col justify-center">
-                    <h2 className="text-3xl font-black mb-6 font-jua text-blue-600">비밀 패턴 설계하기</h2>
+                <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-sm text-center flex flex-col justify-center">
+                    <h2 className="text-3xl font-black mb-2 font-jua text-blue-600">비밀 패턴 설계하기</h2>
+                    <p className="text-slate-500 font-bold mb-6 text-sm">탐정들이 맞히기 쉽게 제시된 보기 중 하나를 골라 그려주세요!</p>
                     
-                    <div className="mb-6 flex flex-wrap gap-3 justify-center">
-                        {['알파벳', '숫자', '한글'].map(c => (
-                            <button key={c} onClick={() => setCategory(c)} 
-                                className={`px-6 py-3 rounded-2xl font-black transition-all border-2 ${category === c ? 'bg-blue-500 text-white border-blue-600 shadow-md' : 'bg-white text-slate-400 border-slate-200 hover:border-blue-300'}`}>
-                                {c}
-                            </button>
-                        ))}
+                    {/* 카테고리 및 글자 선택 영역 */}
+                    <div className="bg-slate-50 p-6 rounded-[2rem] border-2 border-slate-100 mb-8 max-w-lg mx-auto w-full">
+                        <div className="mb-4">
+                            <p className="text-sm font-black text-slate-400 mb-3 uppercase">1. 어떤 종류를 그릴까요?</p>
+                            <div className="flex flex-wrap gap-2 justify-center">
+                                {Object.keys(PATTERN_OPTIONS).map(c => (
+                                    <button key={c} onClick={() => {setCategory(c); setAnswer('');}} 
+                                        className={`px-5 py-2 rounded-xl font-black transition-all ${category === c ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-slate-400 border border-slate-200 hover:border-blue-300'}`}>
+                                        {c}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {category && (
+                            <div className="mt-6 pt-6 border-t-2 border-slate-200 transition-all duration-300">
+                                <p className="text-sm font-black text-slate-400 mb-3 uppercase">2. 그릴 모양 선택</p>
+                                <div className="flex flex-wrap gap-2 justify-center">
+                                    {PATTERN_OPTIONS[category].map(char => (
+                                        <button key={char} onClick={() => setAnswer(char)} 
+                                            className={`w-12 h-12 rounded-xl font-black text-2xl transition-all ${answer === char ? 'bg-amber-400 text-white shadow-md scale-110' : 'bg-white text-slate-500 border border-slate-200 hover:border-amber-300 hover:bg-amber-50'}`}>
+                                            {char}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
-                    <input type="text" placeholder="어떤 모양을 그렸나요? (정답 입력)" value={answer} onChange={e=>setAnswer(e.target.value)} className="w-full max-w-sm mx-auto p-4 border-4 border-blue-50 rounded-2xl text-xl font-black text-center mb-6 outline-none focus:border-blue-400" />
-
-                    <div className="grid grid-cols-5 gap-3 p-6 bg-slate-50 rounded-[3rem] inline-grid mb-10 border-4 border-slate-100 shadow-inner mx-auto">
-                        {groupData.imageData.map((v, i) => (
-                            <button key={i} onClick={() => toggle(i)} className={`w-14 h-14 md:w-20 md:h-20 rounded-2xl border-2 transition-all duration-200 ${v === 1 ? 'bg-slate-800 border-slate-900 shadow-lg scale-105' : 'bg-white border-slate-200'}`} />
-                        ))}
+                    {/* 그림 그리기 영역 */}
+                    <div className={`transition-opacity duration-500 ${answer ? 'opacity-100' : 'opacity-40'}`}>
+                        <p className="font-black text-blue-600 mb-4">{answer ? `선택한 '${answer}' 모양을 아래 격자에 예쁘게 그려주세요!` : '먼저 모양을 선택해야 그릴 수 있어요.'}</p>
+                        <div className="grid grid-cols-5 gap-3 p-6 bg-slate-50 rounded-[3rem] inline-grid mb-10 border-4 border-slate-100 shadow-inner mx-auto">
+                            {groupData.imageData.map((v, i) => (
+                                <button key={i} onClick={() => toggle(i)} className={`w-12 h-12 md:w-16 md:h-16 rounded-2xl border-2 transition-all duration-200 ${v === 1 ? 'bg-slate-800 border-slate-900 shadow-lg scale-105' : 'bg-white border-slate-200'}`} />
+                            ))}
+                        </div>
+                        <button onClick={submit} className={`w-full max-w-sm mx-auto py-5 rounded-[2rem] font-black text-2xl flex items-center justify-center gap-3 shadow-xl transition-all ${answer ? 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}>
+                            <Icon name="send" size={28} /> 탐정들에게 출제하기
+                        </button>
                     </div>
-                    <button onClick={submit} className="bg-blue-600 text-white px-16 py-6 rounded-[2rem] font-black text-2xl flex items-center justify-center gap-3 mx-auto shadow-xl active:scale-95 transition-all"><Icon name="send" size={28} /> 탐정들에게 출제하기</button>
                 </div>
             );
         }
@@ -461,11 +495,7 @@
             const finalize = async () => {
                 const updates = isH ? { horizDone: true } : { vertDone: true };
                 const otherDone = isH ? groupData.vertDone : groupData.horizDone;
-                
-                // 만약 상대방 탐정이 이미 제출을 완료했다면, 함께 다음 단계로 넘어감
-                if (otherDone) {
-                    updates.stage = STAGES.GUESSING;
-                }
+                if (otherDone) updates.stage = STAGES.GUESSING;
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), updates);
             };
 
@@ -520,15 +550,15 @@
             );
         }
 
+        // --- 정답 대장 뷰: 1글자 입력 제한 ---
         function AnswererView({ groupData, lessonCode, groupId, db }) {
             const [g, setG] = useState('');
             
             const submit = async () => {
-                if(!g.trim()) return alert("최종 정답을 입력해주세요!");
+                if(!g.trim()) return alert("최종 정답을 1글자로 입력해주세요!");
                 
-                // 정답 비교 (띄어쓰기 및 대소문자 무시)
                 const isCorrect = g.trim().toLowerCase() === (groupData.intendedAnswer || "").trim().toLowerCase();
-                const newScore = (groupData.score || 0) + (isCorrect ? 10 : 0); // 정답 시 10점 추가
+                const newScore = (groupData.score || 0) + (isCorrect ? 10 : 0); 
                 
                 await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
                     stage: STAGES.FINISHED, 
@@ -553,15 +583,15 @@
                     <div className="bg-white p-12 rounded-[4rem] shadow-2xl border-4 border-amber-400 text-center relative overflow-hidden">
                         <div className="absolute -top-10 -right-10 text-amber-100 opacity-50"><Icon name="brain-circuit" size={200}/></div>
                         
-                        {/* 카테고리 힌트 표시 */}
-                        <div className="inline-block bg-amber-100 text-amber-600 font-black px-6 py-2 rounded-full mb-6 relative z-10 text-lg">
-                            💡 카테고리 힌트 : {groupData.category}
+                        <div className="inline-block bg-amber-100 text-amber-600 font-black px-6 py-2 rounded-full mb-6 relative z-10 text-lg border border-amber-300">
+                            💡 그림 대장의 카테고리 힌트 : {groupData.category}
                         </div>
                         
                         <h3 className="text-4xl font-black mb-4 font-jua text-amber-600 relative z-10">🕵️ 범인(모양) 검거하기</h3>
-                        <p className="font-bold text-slate-500 mb-8 relative z-10">점수가 높은 곳을 조합하면 어떤 모양이 만들어질까요?</p>
+                        <p className="font-bold text-slate-500 mb-8 relative z-10">어떤 모양인지 <span className="text-rose-500">단 한 글자</span>로 정확히 입력하세요! (예: ㄱ, L, 7)</p>
                         <div className="max-w-lg mx-auto relative z-10 flex gap-4">
-                            <input type="text" value={g} onChange={e=>setG(e.target.value)} className="flex-1 p-6 border-4 border-slate-100 rounded-3xl text-center text-4xl font-black outline-none focus:border-amber-400 shadow-inner" placeholder="정답을 적어주세요" />
+                            {/* maxLength=1 설정으로 한 글자만 입력 가능 */}
+                            <input type="text" value={g} onChange={e=>setG(e.target.value)} maxLength="1" className="flex-1 p-6 border-4 border-slate-100 rounded-3xl text-center text-4xl font-black outline-none focus:border-amber-400 shadow-inner uppercase" placeholder="정답 1글자 입력" />
                             <button onClick={submit} className="bg-amber-500 text-white px-10 rounded-3xl font-black text-2xl shadow-xl hover:bg-amber-600 transition-colors">발표!</button>
                         </div>
                     </div>
@@ -574,7 +604,6 @@
                 const capacity = groupData.capacity || 4;
                 const memberUids = Object.keys(groupData.members);
                 
-                // 완전 랜덤으로 역할(인덱스) 섞기
                 let indices = Array.from({length: capacity}, (_, i) => i);
                 indices.sort(() => Math.random() - 0.5); 
                 
