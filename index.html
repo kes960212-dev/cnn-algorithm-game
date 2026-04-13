@@ -1,664 +1,797 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 패턴 탐정단 - CNN 알고리즘 체험</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;700;900&display=swap');
-        body { font-family: 'Noto Sans KR', sans-serif; }
-        .font-jua { font-family: 'Jua', sans-serif; }
-        .grid-bg { background-image: radial-gradient(#e2e8f0 1px, transparent 1px); background-size: 20px 20px; }
-    </style>
-</head>
-<body class="bg-slate-50 text-slate-800 grid-bg">
-    <div id="root"></div>
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { 
+  getFirestore, doc, setDoc, onSnapshot, updateDoc, 
+  collection, getDoc, getDocs 
+} from 'firebase/firestore';
+import { 
+  LucideSearch, LucideBrainCircuit, LucideSend, LucideUsers, 
+  LucideRefreshCcw, LucideLayoutDashboard, LucideLock, 
+  LucidePlay, LucideUserPlus, LucideCheck, LucideChevronUp, 
+  LucideChevronDown, LucideChevronLeft, LucideChevronRight, LucideFileText
+} from 'lucide-react';
 
-    <script type="text/babel" data-type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, collection, getDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+/**
+ * [필독] 
+ * 1. 미리보기 환경에서는 아래 코드가 자동으로 시스템의 Firebase를 사용합니다.
+ * 2. 나중에 GitHub Pages에 직접 배포하실 때는 'firebaseConfig' 부분에 
+ * 본인의 Firebase 콘솔에서 복사한 실제 키값들을 붙여넣으세요.
+ */
+const firebaseConfig = {
+  apiKey: "AIzaSyBcci9JE7Py_WfxoJ-KKAXT8ckcCsjxNII",
+  authDomain: "cnn-algorithm.firebaseapp.com",
+  databaseURL: "https://cnn-algorithm-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "cnn-algorithm",
+  storageBucket: "cnn-algorithm.firebasestorage.app",
+  messagingSenderId: "972364178713",
+  appId: "1:972364178713:web:57c0dee3ec67449c73d188",
+  measurementId: "G-7BCEGXC3JP"
+};
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyBcci9JE7Py_WfxoJ-KKAXT8ckcCsjxNII",
-            authDomain: "cnn-algorithm.firebaseapp.com",
-            projectId: "cnn-algorithm",
-            storageBucket: "cnn-algorithm.firebasestorage.app",
-            messagingSenderId: "972364178713",
-            appId: "1:972364178713:web:57c0dee3ec67449c73d188",
-            measurementId: "G-7BCEGXC3JP"
-        };
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'cnn-detective-v1';
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+// --- Constants ---
+const FILTERS = {
+  horizontal: [[0, 0, 0], [1, 1, 1], [0, 0, 0]],
+  vertical: [[0, 1, 0], [0, 1, 0], [0, 1, 0]]
+};
 
-        const { useState, useEffect } = React;
+const ROLE_LIST = ['그림 대장', '가로 탐정', '세로 탐정', '정답 대장'];
 
-        const GRID_SIZE = 5;
-        const FILTERS = {
-            horizontal: [[0, 0, 0], [1, 1, 1], [0, 0, 0]],
-            vertical: [[0, 1, 0], [0, 1, 0], [0, 1, 0]]
-        };
+const ROLE_INFO = {
+    '그림 대장': {
+        desc: '비밀 패턴 설계자',
+        manual: ['먼저 어떤 종류의 글자를 그릴지 고르세요.', '주어진 보기 중에서 모양을 선택하세요.', '선택한 모양을 5x5 격자에 그리고 출제하세요!']
+    },
+    '가로 탐정': {
+        desc: '가로 특징 추출 요원',
+        manual: ['그림 위에 초록색 돋보기를 올리세요.', '왼쪽 위부터 차례대로 스캔하세요.', '겹치는 칸의 개수를 계산해 점수표를 채우세요.']
+    },
+    '세로 탐정': {
+        desc: '세로 특징 추출 요원',
+        manual: ['그림 위에 빨간색 돋보기를 올리세요.', '왼쪽 위부터 차례대로 스캔하세요.', '겹치는 칸의 개수를 계산해 점수표를 채우세요.']
+    },
+    '정답 대장': {
+        desc: '데이터 통합 추론가',
+        manual: ['두 탐정의 수사 결과 보고서를 받으세요.', '점수가 높은 위치를 연결해 모양을 상상하세요.', '최종 범인(그림)을 맞혀보세요.']
+    }
+};
 
-        const ROLE_INFO = {
-            '그림 대장': {
-                icon: 'pen-tool', color: 'text-blue-600', bg: 'bg-blue-50', desc: '비밀 패턴 설계자',
-                manual: ['먼저 어떤 종류의 글자를 그릴지 고르세요.', '주어진 보기 중에서 모양을 선택하세요.', '선택한 모양을 5x5 격자에 그리고 출제하세요!']
-            },
-            '가로 탐정': {
-                icon: 'search', color: 'text-emerald-600', bg: 'bg-emerald-50', desc: '가로 특징 추출 요원',
-                manual: ['그림 위에 초록색 돋보기를 올리세요.', '왼쪽 위부터 차례대로 스캔하세요.', '겹치는 칸의 개수를 계산해 점수표를 채우세요.']
-            },
-            '세로 탐정': {
-                icon: 'search', color: 'text-rose-600', bg: 'bg-rose-50', desc: '세로 특징 추출 요원',
-                manual: ['그림 위에 빨간색 돋보기를 올리세요.', '왼쪽 위부터 차례대로 스캔하세요.', '겹치는 칸의 개수를 계산해 점수표를 채우세요.']
-            },
-            '정답 대장': {
-                icon: 'brain-circuit', color: 'text-amber-600', bg: 'bg-amber-50', desc: '데이터 통합 추론가',
-                manual: ['두 탐정의 수사 결과 보고서를 받으세요.', '점수가 높은 위치를 연결해 모양을 상상하세요.', '최종 범인(그림)을 맞혀보세요.']
-            }
-        };
+const STAGES = {
+  LOBBY: 'lobby',
+  DRAWING: 'drawing',
+  SCANNING: 'scanning',
+  GUESSING: 'guessing',
+  FINISHED: 'finished'
+};
 
-        const STAGES = { LOBBY: 'lobby', DRAWING: 'drawing', SCANNING: 'scanning', GUESSING: 'guessing', FINISHED: 'finished' };
+const EASY_PATTERNS = [
+    { name: 'ㄱ', category: '한글', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1] },
+    { name: 'ㄴ', category: '한글', data: [1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,1] },
+    { name: 'ㅁ', category: '한글', data: [1,1,1,1,1, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 1,1,1,1,1] },
+    { name: 'L', category: '알파벳', data: [1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,1] },
+    { name: 'T', category: '알파벳', data: [1,1,1,1,1, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0] },
+    { name: '7', category: '숫자', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,1,0, 0,0,1,0,0, 0,0,1,0,0] }
+];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState('main'); 
+  const [lessonCode, setLessonCode] = useState('');
+  const [groupId, setGroupId] = useState(null);
+  const [lessonData, setLessonData] = useState(null);
+  const [groupData, setGroupData] = useState(null);
+
+  // --- Auth Setup (Rule 3 준수) ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth Error", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // --- Lesson Data Sync ---
+  useEffect(() => {
+    if (!user || !lessonCode || view === 'main') return;
+    const lessonRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', lessonCode);
+    const unsubscribe = onSnapshot(lessonRef, (snap) => {
+      if (snap.exists()) setLessonData(snap.data());
+    }, (err) => console.error("Lesson Snapshot error:", err));
+    return () => unsubscribe();
+  }, [user, lessonCode, view]);
+
+  // --- Group Data Sync ---
+  useEffect(() => {
+    if (!user || !lessonCode || !groupId || view !== 'student_game') return;
+    const groupRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', lessonCode, 'groups', groupId);
+    const unsubscribe = onSnapshot(groupRef, (snap) => {
+      if (snap.exists()) setGroupData(snap.data());
+    }, (err) => console.error("Group Snapshot error:", err));
+    return () => unsubscribe();
+  }, [user, lessonCode, groupId, view]);
+
+  const createLesson = async (code, groupsConfig) => {
+    if (!user) return;
+    try {
+        const lessonRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', code);
+        await setDoc(lessonRef, { code, groupCount: groupsConfig.length, createdAt: Date.now() });
+        for (let i = 0; i < groupsConfig.length; i++) {
+            const gId = `G${i+1}`;
+            const gRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', code, 'groups', gId);
+            await setDoc(gRef, {
+                id: gId, stage: STAGES.LOBBY, round: 1, imageData: Array(25).fill(0),
+                horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
+                members: {}, capacity: groupsConfig[i], score: 0,
+                horizDone: false, vertDone: false
+            });
+        }
+        setLessonCode(code); setView('teacher_dash'); 
+    } catch (e) { alert("오류 발생! Firestore 규칙을 확인하세요."); console.error(e); }
+  };
+
+  const joinGroup = async (code, gId, playerName) => {
+    if (!user) return;
+    const groupRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', code, 'groups', gId);
+    const snap = await getDoc(groupRef);
+    if (!snap.exists()) throw new Error("존재하지 않는 모둠입니다.");
+    
+    const data = snap.data();
+    const members = data.members || {};
+    const capacity = data.capacity || 4;
+    
+    let isRejoin = false;
+    let oldUid = null;
+    
+    for (const [key, val] of Object.entries(members)) {
+        if (val.name === playerName) {
+            isRejoin = true;
+            oldUid = key;
+            break;
+        }
+    }
+
+    const newMembers = { ...members };
+
+    if (isRejoin) {
+        const existingMember = newMembers[oldUid];
+        delete newMembers[oldUid];
+        newMembers[user.uid] = { ...existingMember, uid: user.uid };
+    } else {
+        if (Object.keys(newMembers).length >= capacity) {
+          throw new Error("이미 정원이 찬 모둠입니다.");
+        }
+        const usedIndices = Object.values(newMembers).map(m => m.baseIndex);
+        let freeIndex = 0;
+        while (usedIndices.includes(freeIndex)) freeIndex++;
         
-        // 3인 모둠용 자동 문제 출제 (카테고리 포함)
-        const EASY_PATTERNS = [
-            { name: 'ㄱ', category: '한글', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1] },
-            { name: 'ㄴ', category: '한글', data: [1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,1] },
-            { name: 'ㅁ', category: '한글', data: [1,1,1,1,1, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 1,1,1,1,1] },
-            { name: 'L', category: '알파벳', data: [1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,1] },
-            { name: 'T', category: '알파벳', data: [1,1,1,1,1, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0] },
-            { name: '7', category: '숫자', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,1,0, 0,0,1,0,0, 0,0,1,0,0] }
-        ];
+        newMembers[user.uid] = { uid: user.uid, baseIndex: freeIndex, name: playerName };
+    }
 
-        const Icon = ({ name, size = 24, className = "" }) => <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+    await updateDoc(groupRef, { members: newMembers });
+    setLessonCode(code); setGroupId(gId); setView('student_game');
+  };
 
-        function App() {
-            const [user, setUser] = useState(null);
-            const [view, setView] = useState('main'); 
-            const [lessonCode, setLessonCode] = useState('');
-            const [groupId, setGroupId] = useState(null);
-            const [groupData, setGroupData] = useState(null);
+  const getMyRole = () => {
+    if (!groupData || !user || !groupData.members?.[user.uid]) return null;
+    const capacity = groupData.capacity || 4;
+    const baseIndex = groupData.members[user.uid].baseIndex;
+    return capacity === 3 ? ['가로 탐정', '세로 탐정', '정답 대장'][baseIndex % 3] : Object.keys(ROLE_INFO)[baseIndex % 4];
+  };
 
-            useEffect(() => {
-                signInAnonymously(auth).catch(e => console.error(e));
-                const unsubscribe = onAuthStateChanged(auth, setUser);
-                return () => unsubscribe();
-            }, []);
+  const updateGroup = async (updates) => {
+    if (!user || !lessonCode || !groupId) return;
+    const groupRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', lessonCode, 'groups', groupId);
+    await updateDoc(groupRef, updates);
+  };
 
-            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [view, groupData?.stage]);
+  const startRound = async () => {
+    if (!user) return;
+    const capacity = groupData.capacity || 4;
+    if (capacity === 3) {
+      const p = EASY_PATTERNS[Math.floor(Math.random() * EASY_PATTERNS.length)];
+      await updateGroup({
+        stage: STAGES.SCANNING,
+        imageData: p.data,
+        category: p.category,
+        intendedAnswer: p.name,
+        finalGuess: '',
+        horizScores: Array(9).fill(0),
+        vertScores: Array(9).fill(0),
+        horizDone: false,
+        vertDone: false
+      });
+    } else {
+      await updateGroup({ 
+        stage: STAGES.DRAWING, 
+        imageData: Array(25).fill(0), 
+        category: '',
+        intendedAnswer: '',
+        finalGuess: '',
+        horizScores: Array(9).fill(0),
+        vertScores: Array(9).fill(0),
+        horizDone: false,
+        vertDone: false
+      });
+    }
+  };
 
-            useEffect(() => {
-                if (!user || !lessonCode || !groupId || view !== 'student_game') return;
-                const unsubscribe = onSnapshot(doc(db, 'lessons', lessonCode, 'groups', groupId), (snap) => {
-                    if (snap.exists()) setGroupData(snap.data());
-                });
-                return () => unsubscribe();
-            }, [user, lessonCode, groupId, view]);
+  const nextRound = async () => {
+    if (!user) return;
+    const capacity = groupData.capacity || 4;
+    const memberUids = Object.keys(groupData.members);
+    
+    // 완전 랜덤으로 역할(인덱스) 섞기
+    let indices = Array.from({length: capacity}, (_, i) => i);
+    indices.sort(() => Math.random() - 0.5); 
+    
+    const newMembers = { ...groupData.members };
+    memberUids.forEach((uid, i) => {
+        newMembers[uid].baseIndex = indices[i];
+    });
 
-            const createLesson = async (code, groupsConfig) => {
-                if (!user) return;
-                try {
-                    await setDoc(doc(db, 'lessons', code), { code, groupCount: groupsConfig.length, createdAt: Date.now() });
-                    for (let i = 0; i < groupsConfig.length; i++) {
-                        const id = `G${i+1}`;
-                        await setDoc(doc(db, 'lessons', code, 'groups', id), {
-                            id, stage: STAGES.LOBBY, round: 1, imageData: Array(25).fill(0),
-                            horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
-                            members: {}, capacity: groupsConfig[i], score: 0,
-                            horizDone: false, vertDone: false
-                        });
-                    }
-                    setLessonCode(code); setView('teacher_dash'); 
-                } catch (e) { alert("오류 발생! Firestore 규칙을 확인하세요."); console.error(e); }
-            };
+    await updateGroup({
+      round: groupData.round + 1,
+      stage: STAGES.LOBBY,
+      imageData: Array(25).fill(0),
+      horizScores: Array(9).fill(0),
+      vertScores: Array(9).fill(0),
+      finalGuess: '',
+      intendedAnswer: '',
+      category: '',
+      members: newMembers,
+      isCorrect: null,
+      horizDone: false,
+      vertDone: false
+    });
+  };
 
-            const joinGroup = async (code, gId) => {
-                if (!user) return;
-                try {
-                    const gRef = doc(db, 'lessons', code, 'groups', gId);
-                    const snap = await getDoc(gRef);
-                    if (!snap.exists()) { alert("없는 모둠입니다."); return; }
-                    const groupInfo = snap.data();
-                    const members = groupInfo.members || {};
-                    const capacity = groupInfo.capacity || 4;
-                    if (!members[user.uid]) {
-                        if (Object.keys(members).length >= capacity) { alert("정원이 찼습니다!"); return; }
-                        const usedIdx = Object.values(members).map(m => m.baseIndex);
-                        let freeIdx = 0; while (usedIdx.includes(freeIdx)) freeIdx++;
-                        await updateDoc(gRef, { [`members.${user.uid}`]: { uid: user.uid, baseIndex: freeIdx } });
-                    }
-                    setLessonCode(code); setGroupId(gId); setView('student_game');
-                } catch (e) { console.error(e); }
-            };
+  // --- Views ---
 
-            const getMyRole = () => {
-                if (!groupData || !user || !groupData.members?.[user.uid]) return null;
-                const capacity = groupData.capacity || 4;
-                const bIdx = groupData.members[user.uid].baseIndex;
-                return capacity === 3 ? ['가로 탐정', '세로 탐정', '정답 대장'][bIdx % 3] : Object.keys(ROLE_INFO)[bIdx % 4];
-            };
+  if (view === 'main') return (
+    <div className="h-screen flex flex-col items-center justify-center bg-indigo-600 text-white p-6">
+        <LucideBrainCircuit size={80} className="mb-6 animate-bounce" />
+        <h1 className="text-5xl font-black mb-12 tracking-tighter">AI 패턴 탐정단 v3</h1>
+        <div className="flex flex-col sm:flex-row gap-6 w-full max-w-xl">
+            <button onClick={() => setView('teacher_setup')} className="flex-1 bg-white text-indigo-600 py-8 rounded-[2rem] font-black text-2xl shadow-xl hover:scale-105 transition-transform">선생님 메뉴</button>
+            <button onClick={() => setView('student_join')} className="flex-1 bg-indigo-900 text-indigo-100 py-8 rounded-[2rem] font-black text-2xl shadow-xl hover:scale-105 transition-transform">학생 입장</button>
+        </div>
+    </div>
+  );
 
-            if (view === 'main') return (
-                <div className="min-h-screen flex flex-col items-center justify-center p-6 max-w-5xl mx-auto">
-                    <div className="text-center mb-10">
-                        <div className="bg-indigo-600 text-white p-5 rounded-3xl inline-block mb-4 shadow-xl"><Icon name="brain-circuit" size={64} /></div>
-                        <h1 className="text-5xl font-black font-jua tracking-tighter text-indigo-600 mb-2">AI 패턴 탐정단</h1>
-                        <p className="text-slate-500 font-bold text-lg">인공지능의 특징 추출 알고리즘(CNN) 체험</p>
-                    </div>
+  if (view === 'teacher_setup') return <TeacherSetup onCreate={createLesson} onBack={() => setView('main')} />;
+  if (view === 'teacher_dash') return <TeacherDashboard lessonCode={lessonCode} db={db} onBack={() => setView('main')} />;
+  if (view === 'student_join') return <StudentJoin onJoin={joinGroup} onBack={() => setView('main')} db={db} />;
 
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10 w-full">
-                        {Object.entries(ROLE_INFO).map(([name, info]) => (
-                            <div key={name} className="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-slate-200 text-center flex flex-col items-center">
-                                <div className={`${info.bg} ${info.color} w-14 h-14 rounded-full flex items-center justify-center mb-4`}><Icon name={info.icon} size={28} /></div>
-                                <h3 className="font-black text-lg mb-2">{name}</h3>
-                                <p className="text-xs text-slate-500 font-bold">{info.desc}</p>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-6 w-full max-w-2xl">
-                        <button onClick={() => setView('teacher_setup')} className="flex-1 bg-white text-indigo-600 py-6 rounded-[2rem] font-black text-xl shadow-xl hover:bg-indigo-50 border-2 border-indigo-100 flex items-center justify-center gap-3"><Icon name="layout-dashboard"/> 선생님 메뉴</button>
-                        <button onClick={() => setView('student_join')} className="flex-1 bg-indigo-600 text-white py-6 rounded-[2rem] font-black text-xl shadow-xl hover:bg-indigo-700 flex items-center justify-center gap-3"><Icon name="users"/> 탐정 입장</button>
-                    </div>
+  if (view === 'student_game' && groupData) {
+    if (!groupData.members?.[user?.uid]) {
+        return (
+            <div className="min-h-screen bg-slate-50 p-4 md:p-8 flex items-center justify-center">
+                <div className="bg-white p-10 rounded-[3rem] text-center shadow-xl">
+                    <LucideLock size={64} className="mx-auto text-rose-400 mb-6" />
+                    <h2 className="text-3xl font-black text-slate-800 mb-4">접속이 끊겼습니다</h2>
+                    <p className="text-slate-500 font-bold mb-8">선생님에 의해 내보내졌거나 연결 문제가 발생했습니다.<br/>이전과 동일한 이름으로 다시 접속하면 원래 자리로 복귀할 수 있습니다.</p>
+                    <button onClick={() => setView('main')} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black text-xl hover:bg-indigo-700 transition-all shadow-lg active:scale-95">처음으로 돌아가기</button>
                 </div>
-            );
+            </div>
+        );
+    }
 
-            if (view === 'teacher_setup') return <TeacherSetup onCreate={createLesson} onBack={() => setView('main')} />;
-            if (view === 'teacher_dash') return <TeacherDashboard lessonCode={lessonCode} db={db} onBack={() => setView('main')} />;
-            if (view === 'student_join') return <StudentJoin onJoin={joinGroup} onBack={() => setView('main')} db={db} />;
-
-            if (view === 'student_game' && groupData) {
-                const myRole = getMyRole();
-                return (
-                    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
-                        {/* 역할 매뉴얼 사이드바 */}
-                        <aside className="w-full md:w-80 bg-white border-r border-slate-200 p-6 shrink-0 order-2 md:order-1">
-                            <div className="sticky top-6">
-                                <div className={`${ROLE_INFO[myRole]?.bg || 'bg-slate-100'} p-6 rounded-3xl mb-6 shadow-sm`}>
-                                    <div className="flex items-center gap-3 mb-4">
-                                        <div className={`${ROLE_INFO[myRole]?.color || 'text-slate-600'}`}><Icon name={ROLE_INFO[myRole]?.icon || 'help-circle'} size={28}/></div>
-                                        <h2 className="font-black text-xl">{myRole || '대기'} 매뉴얼</h2>
-                                    </div>
-                                    <p className="text-sm font-bold text-slate-500 mb-6">{ROLE_INFO[myRole]?.desc || '기다려주세요.'}</p>
-                                    <ul className="space-y-4">
-                                        {ROLE_INFO[myRole]?.manual.map((m, i) => (
-                                            <li key={i} className="flex gap-3 text-sm text-slate-700 font-bold items-start">
-                                                <span className="bg-white w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs border-2 border-slate-200 shadow-sm">{i+1}</span>
-                                                <span className="pt-0.5">{m}</span>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                </div>
-                                <div className="bg-slate-50 p-5 rounded-2xl border-2 border-slate-100 text-center">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <p className="text-lg font-black text-indigo-600">{groupId} 모둠</p>
-                                        <div className="text-right">
-                                            <p className="text-xs text-slate-400 font-bold">누적 점수</p>
-                                            <p className="text-xl font-black text-amber-500">{groupData.score || 0}점</p>
-                                        </div>
-                                    </div>
-                                    <button onClick={() => setView('main')} className="w-full py-3 text-sm font-bold text-slate-400 hover:text-rose-500 border-2 border-slate-200 rounded-xl bg-white transition-colors">수업 나가기</button>
-                                </div>
-                            </div>
-                        </aside>
-
-                        <main className="flex-1 p-4 md:p-10 order-1 md:order-2 overflow-y-auto">
-                            {groupData.stage === STAGES.LOBBY && <LobbyView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} />}
-                            {groupData.stage === STAGES.DRAWING && (myRole === '그림 대장' ? <LeaderView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} /> : <Waiting text="그림 대장이 비밀 패턴 설계 중..." role="그림 대장" />)}
-                            {groupData.stage === STAGES.SCANNING && (['가로 탐정', '세로 탐정'].includes(myRole) ? <DetectiveView role={myRole} groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} /> : <Waiting text="탐정들이 특징을 분석 중입니다..." role="탐정들" />)}
-                            {groupData.stage === STAGES.GUESSING && (myRole === '정답 대장' ? <AnswererView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} /> : <Waiting text="정답 대장이 수사망을 좁히는 중..." role="정답 대장" />)}
-                            {groupData.stage === STAGES.FINISHED && <ResultView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} />}
-                        </main>
+    const myRole = getMyRole();
+    return (
+        <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
+            {/* 역할 매뉴얼 사이드바 */}
+            <aside className="w-full md:w-80 bg-white border-r border-slate-200 p-6 shrink-0 order-2 md:order-1">
+                <div className="sticky top-6">
+                    <div className="bg-slate-100 p-6 rounded-3xl mb-6 shadow-sm">
+                        <div className="flex items-center gap-3 mb-4">
+                            <h2 className="font-black text-xl text-slate-700">{myRole || '대기'} 매뉴얼</h2>
+                        </div>
+                        <p className="text-sm font-bold text-slate-500 mb-6">{ROLE_INFO[myRole]?.desc || '기다려주세요.'}</p>
+                        <ul className="space-y-4">
+                            {ROLE_INFO[myRole]?.manual?.map((m, i) => (
+                                <li key={i} className="flex gap-3 text-sm text-slate-700 font-bold items-start">
+                                    <span className="bg-white w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs border-2 border-slate-200 shadow-sm">{i+1}</span>
+                                    <span className="pt-0.5">{m}</span>
+                                </li>
+                            ))}
+                        </ul>
                     </div>
-                );
-            }
-            return null;
-        }
-
-        /* --- 교사 서브 컴포넌트 --- */
-        function TeacherSetup({ onCreate, onBack }) {
-            const [code, setCode] = useState('');
-            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]); 
-            const [loading, setLoading] = useState(false);
-            
-            const handleCreate = async () => {
-                setLoading(true);
-                await onCreate(code, groupsConfig);
-                setLoading(false);
-            };
-
-            const addGroup = () => setGroupsConfig([...groupsConfig, 4]);
-            const removeGroup = () => setGroupsConfig(groupsConfig.slice(0, -1));
-            const setCapacity = (index, cap) => {
-                const newConfig = [...groupsConfig];
-                newConfig[index] = cap;
-                setGroupsConfig(newConfig);
-            };
-
-            return (
-                <div className="h-screen flex items-center justify-center p-6 bg-slate-900">
-                    <div className="bg-white p-8 md:p-10 rounded-[3rem] w-full max-w-lg shadow-2xl text-center">
-                        <h2 className="text-3xl font-black mb-8 font-jua">수업 개설하기</h2>
-                        <input type="text" placeholder="수업 코드 (예: AI101)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center mb-6 outline-none focus:border-indigo-500" />
-                        
-                        <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl mb-4">
-                            <span className="font-bold text-slate-500 ml-2">총 모둠 수</span>
-                            <div className="flex items-center gap-4 mr-2">
-                                <button onClick={removeGroup} disabled={groupsConfig.length <= 1} className="text-2xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm disabled:opacity-30">-</button>
-                                <span className="text-2xl font-black w-8">{groupsConfig.length}</span>
-                                <button onClick={addGroup} className="text-3xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm">+</button>
+                    <div className="bg-slate-50 p-5 rounded-2xl border-2 border-slate-100 text-center">
+                        <div className="flex items-center justify-between mb-4">
+                            <p className="text-lg font-black text-indigo-600">{groupId} 모둠</p>
+                            <div className="text-right">
+                                <p className="text-xs text-slate-400 font-bold">누적 점수</p>
+                                <p className="text-xl font-black text-amber-500">{groupData.score || 0}점</p>
                             </div>
                         </div>
-
-                        <div className="bg-slate-50 p-4 rounded-2xl mb-6 border-2 border-slate-100">
-                            <p className="text-sm font-bold text-slate-500 mb-3">각 모둠별 인원 설정 (3명 / 4명)</p>
-                            <div className="grid grid-cols-2 gap-3 max-h-40 overflow-y-auto p-1">
-                                {groupsConfig.map((cap, i) => (
-                                    <div key={i} className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
-                                        <span className="font-bold text-sm ml-2">{i+1}모둠</span>
-                                        <div className="flex gap-1">
-                                            <button onClick={() => setCapacity(i, 3)} className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${cap === 3 ? 'bg-rose-500 text-white shadow-md' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>3명</button>
-                                            <button onClick={() => setCapacity(i, 4)} className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${cap === 4 ? 'bg-indigo-500 text-white shadow-md' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>4명</button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        <button onClick={handleCreate} disabled={!code || loading} className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-lg active:scale-95 disabled:opacity-50 mb-2">
-                            {loading ? '생성 중...' : '수업 시작하기'}
-                        </button>
-                        <button onClick={onBack} className="w-full text-slate-400 font-bold py-3 hover:text-slate-600">취소</button>
+                        <button onClick={() => setView('main')} className="w-full py-3 text-sm font-bold text-slate-400 hover:text-rose-500 border-2 border-slate-200 rounded-xl bg-white transition-colors">수업 나가기</button>
                     </div>
                 </div>
-            );
-        }
+            </aside>
 
-        function TeacherDashboard({ lessonCode, db, onBack }) {
-            const [groups, setGroups] = useState([]);
-            useEffect(() => {
-                const unsubscribe = onSnapshot(collection(db, 'lessons', lessonCode, 'groups'), (snap) => {
-                    setGroups(snap.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
-                });
-                return () => unsubscribe();
-            }, []);
-            return (
-                <div className="min-h-screen bg-slate-100 p-8">
-                    <header className="flex justify-between items-center mb-10 max-w-6xl mx-auto">
-                        <h1 className="text-3xl font-black flex items-center gap-3 font-jua"><Icon name="layout-dashboard" className="text-indigo-600"/> 대시보드: {lessonCode}</h1>
-                        <button onClick={onBack} className="bg-slate-800 text-white px-6 py-2 rounded-xl font-bold shadow-md">나가기</button>
-                    </header>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
-                        {groups.map(g => (
-                            <div key={g.id} className="bg-white p-6 rounded-[2rem] shadow-sm border-b-4 border-indigo-200 relative overflow-hidden">
-                                <div className="absolute top-0 right-0 bg-amber-400 text-white px-4 py-1 font-black text-sm rounded-bl-xl shadow-sm">{g.score || 0}점</div>
-                                <div className="flex justify-between items-center font-black mb-4 pt-2">
-                                    <span className="text-xl">{g.id} 모둠</span>
-                                    <span className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full">R{g.round}</span>
+            <main className="flex-1 p-4 md:p-10 order-1 md:order-2 overflow-y-auto">
+                {groupData.stage === STAGES.LOBBY && (
+                    <div className="bg-white p-12 rounded-[3rem] shadow-sm text-center h-full flex flex-col justify-center">
+                        <h2 className="text-4xl font-black mb-12 text-slate-700">모둠원 대기실</h2>
+                        <div className="flex flex-wrap justify-center gap-6 mb-16">
+                            {Object.values(groupData.members || {}).map((m, i) => (
+                                <div key={i} className="flex flex-col items-center">
+                                    <div className="w-24 h-24 bg-indigo-100 rounded-[2rem] flex items-center justify-center text-indigo-600 mb-3 border-b-4 border-indigo-200"><LucideUsers size={40} /></div>
+                                    <span className="text-sm font-black text-indigo-500">{m.name}</span>
                                 </div>
-                                <div className="text-xs font-black text-slate-400 mb-3 tracking-widest flex justify-between items-center">
-                                    <span className="uppercase">{g.stage}</span>
-                                    <span className="text-indigo-500">{Object.keys(g.members || {}).length}/{g.capacity || 4} 명</span>
-                                </div>
-                                <div className="grid grid-cols-5 gap-1 w-fit mx-auto bg-slate-50 p-3 rounded-xl border border-slate-100">
-                                    {g.imageData?.map((v, i) => <div key={i} className={`w-4 h-4 rounded-sm ${v === 1 ? 'bg-slate-800 shadow-sm' : 'bg-white border'}`} />)}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            );
-        }
-
-        function StudentJoin({ onJoin, onBack, db }) {
-            const [code, setCode] = useState('');
-            const [step, setStep] = useState(1);
-            const [available, setAvailable] = useState([]);
-            const check = async () => {
-                const s = await getDoc(doc(db, 'lessons', code));
-                if (s.exists()) {
-                    const g = await getDocs(collection(db, 'lessons', code, 'groups'));
-                    setAvailable(g.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
-                    setStep(2);
-                } else alert("코드를 확인해 주세요.");
-            };
-            return (
-                <div className="h-screen flex items-center justify-center p-6 bg-indigo-600">
-                    <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
-                        {step === 1 ? (
-                            <div className="text-center">
-                                <h2 className="text-3xl font-black mb-8 text-indigo-600 font-jua">수업 참여</h2>
-                                <input type="text" placeholder="선생님이 알려준 코드" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-xl font-black text-center mb-6 outline-none focus:border-indigo-600" />
-                                <button onClick={check} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-indigo-700 active:scale-95 transition-all mb-4">모둠 찾기</button>
-                                <button onClick={onBack} className="text-slate-400 font-bold">취소</button>
-                            </div>
-                        ) : (
-                            <div>
-                                <h2 className="text-2xl font-black mb-6 text-center font-jua">우리 모둠 선택</h2>
-                                <div className="grid grid-cols-2 gap-3 mb-6 max-h-[400px] overflow-y-auto">
-                                    {available.map(g => (
-                                        <button key={g.id} onClick={() => onJoin(code, g.id)} className="bg-slate-50 p-5 rounded-2xl hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-600 transition-all font-bold flex flex-col items-center gap-2">
-                                            <span className="text-xl font-black text-slate-800">{g.id} 모둠</span>
-                                            <span className="text-xs text-indigo-500 font-black bg-indigo-100 px-3 py-1 rounded-full">{Object.keys(g.members || {}).length}/{g.capacity || 4} 명</span>
-                                        </button>
-                                    ))}
-                                </div>
-                                <button onClick={() => setStep(1)} className="text-slate-400 font-bold w-full text-center hover:text-slate-600">뒤로 가기</button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        }
-
-        /* --- 게임 서브 컴포넌트 --- */
-        function LobbyView({ groupData, lessonCode, groupId, db }) {
-            const capacity = groupData.capacity || 4;
-            const start = async () => {
-                const gRef = doc(db, 'lessons', lessonCode, 'groups', groupId);
-                if (capacity === 3) {
-                    const p = EASY_PATTERNS[Math.floor(Math.random()*EASY_PATTERNS.length)];
-                    await updateDoc(gRef, { stage: STAGES.SCANNING, imageData: p.data, category: p.category, intendedAnswer: p.name, horizDone: false, vertDone: false });
-                } else {
-                    await updateDoc(gRef, { stage: STAGES.DRAWING, imageData: Array(25).fill(0), category: '', intendedAnswer: '', horizDone: false, vertDone: false });
-                }
-            };
-            return (
-                <div className="bg-white p-12 rounded-[3rem] shadow-sm text-center h-full flex flex-col justify-center">
-                    <h2 className="text-4xl font-black mb-12 font-jua text-slate-700">모둠원 대기실</h2>
-                    <div className="flex flex-wrap justify-center gap-6 mb-16">
-                        {Object.values(groupData.members || {}).map((_, i) => (
-                            <div key={i} className="flex flex-col items-center animate-pulse">
-                                <div className="w-24 h-24 bg-indigo-100 rounded-[2rem] flex items-center justify-center text-indigo-600 mb-3 border-b-4 border-indigo-200"><Icon name="user" size={40} /></div>
-                                <span className="text-sm font-black text-indigo-500">탐정 {i+1}</span>
-                            </div>
-                        ))}
-                        {Array(Math.max(0, capacity - Object.keys(groupData.members || {}).length)).fill(0).map((_, i) => (
-                            <div key={i} className="w-24 h-24 bg-slate-50 border-4 border-dashed border-slate-200 rounded-[2rem] flex items-center justify-center text-slate-300"><Icon name="user-plus" size={32} /></div>
-                        ))}
-                    </div>
-                    <button onClick={start} className="bg-indigo-600 text-white px-16 py-6 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-xl transition-all active:scale-95 inline-block mx-auto">수사 시작하기!</button>
-                </div>
-            );
-        }
-
-        // --- 그림 대장 뷰: 카테고리 & 모양 선택 UI 추가 ---
-        function LeaderView({ groupData, lessonCode, groupId, db }) {
-            const [category, setCategory] = useState('');
-            const [answer, setAnswer] = useState('');
-
-            // 선택 가능한 쉬운 패턴 목록 (보기 대폭 추가)
-            const PATTERN_OPTIONS = {
-                '한글': ['ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅌ', 'ㅍ', 'ㅏ', 'ㅓ', 'ㅗ', 'ㅜ'],
-                '알파벳': ['A', 'C', 'E', 'F', 'H', 'I', 'L', 'O', 'P', 'T', 'U', 'Y'],
-                '숫자': ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
-            };
-
-            const toggle = async (i) => {
-                if (!answer) return alert("먼저 그릴 모양을 위에서 선택해주세요!");
-                const newData = [...groupData.imageData]; 
-                newData[i] = newData[i] === 0 ? 1 : 0;
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { imageData: newData });
-            };
-
-            const submit = async () => {
-                if (!category || !answer) return alert("카테고리와 그릴 모양을 모두 선택해야 출제할 수 있습니다.");
-                
-                const drawnCount = groupData.imageData.filter(v => v === 1).length;
-                if (drawnCount < 3) return alert("그림을 너무 적게 그렸어요! 특징이 나타나게 조금 더 그려주세요.");
-
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
-                    stage: STAGES.SCANNING, 
-                    category: category,
-                    intendedAnswer: answer,
-                    horizDone: false,
-                    vertDone: false
-                });
-            };
-
-            return (
-                <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-sm text-center flex flex-col justify-center">
-                    <h2 className="text-3xl font-black mb-2 font-jua text-blue-600">비밀 패턴 설계하기</h2>
-                    <p className="text-slate-500 font-bold mb-6 text-sm">탐정들이 맞히기 쉽게 제시된 보기 중 하나를 골라 그려주세요!</p>
-                    
-                    {/* 카테고리 및 글자 선택 영역 */}
-                    <div className="bg-slate-50 p-6 rounded-[2rem] border-2 border-slate-100 mb-8 max-w-lg mx-auto w-full">
-                        <div className="mb-4">
-                            <p className="text-sm font-black text-slate-400 mb-3 uppercase">1. 어떤 종류를 그릴까요?</p>
-                            <div className="flex flex-wrap gap-2 justify-center">
-                                {Object.keys(PATTERN_OPTIONS).map(c => (
-                                    <button key={c} onClick={() => {setCategory(c); setAnswer('');}} 
-                                        className={`px-5 py-2 rounded-xl font-black transition-all ${category === c ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-slate-400 border border-slate-200 hover:border-blue-300'}`}>
-                                        {c}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {category && (
-                            <div className="mt-6 pt-6 border-t-2 border-slate-200 transition-all duration-300">
-                                <p className="text-sm font-black text-slate-400 mb-3 uppercase">2. 그릴 모양 선택</p>
-                                <div className="flex flex-wrap gap-2 justify-center">
-                                    {PATTERN_OPTIONS[category].map(char => (
-                                        <button key={char} onClick={() => setAnswer(char)} 
-                                            className={`w-12 h-12 rounded-xl font-black text-2xl transition-all ${answer === char ? 'bg-amber-400 text-white shadow-md scale-110' : 'bg-white text-slate-500 border border-slate-200 hover:border-amber-300 hover:bg-amber-50'}`}>
-                                            {char}
-                                        </button>
-                                    ))}
-                                </div>
-                                <p className="text-xs font-bold text-amber-500 mt-4">💡 팁: 5x5 칸에 꽉 차게, 굵직하게 그리면 탐정들이 더 쉽게 맞힐 수 있어요!</p>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* 그림 그리기 영역 */}
-                    <div className={`transition-opacity duration-500 ${answer ? 'opacity-100' : 'opacity-40'}`}>
-                        <p className="font-black text-blue-600 mb-4">{answer ? `선택한 '${answer}' 모양을 아래 격자에 예쁘게 그려주세요!` : '먼저 모양을 선택해야 그릴 수 있어요.'}</p>
-                        <div className="grid grid-cols-5 gap-3 p-6 bg-slate-50 rounded-[3rem] inline-grid mb-10 border-4 border-slate-100 shadow-inner mx-auto">
-                            {groupData.imageData.map((v, i) => (
-                                <button key={i} onClick={() => toggle(i)} className={`w-12 h-12 md:w-16 md:h-16 rounded-2xl border-2 transition-all duration-200 ${v === 1 ? 'bg-slate-800 border-slate-900 shadow-lg scale-105' : 'bg-white border-slate-200'}`} />
+                            ))}
+                            {Array(Math.max(0, (groupData.capacity || 4) - Object.keys(groupData.members || {}).length)).fill(0).map((_, i) => (
+                                <div key={i} className="w-24 h-24 bg-slate-50 border-4 border-dashed border-slate-200 rounded-[2rem] flex items-center justify-center text-slate-300"><LucideUserPlus size={32} /></div>
                             ))}
                         </div>
-                        <button onClick={submit} className={`w-full max-w-sm mx-auto py-5 rounded-[2rem] font-black text-2xl flex items-center justify-center gap-3 shadow-xl transition-all ${answer ? 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}>
-                            <Icon name="send" size={28} /> 탐정들에게 출제하기
-                        </button>
+                        <button disabled={Object.keys(groupData.members || {}).length < 2} onClick={startRound} className="bg-indigo-600 text-white px-16 py-6 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-xl transition-all active:scale-95 inline-block mx-auto disabled:opacity-30"> <LucidePlay className="inline mr-2"/> 수사 시작하기! </button>
+                    </div>
+                )}
+
+                {groupData.stage === STAGES.DRAWING && (
+                    myRole === '그림 대장' ? (
+                        <LeaderDrawingView state={groupData} onUpdate={updateGroup} />
+                    ) : (
+                        <WaitingView text="그림 대장이 비밀 패턴 설계 중..." role="그림 대장" />
+                    )
+                )}
+
+                {groupData.stage === STAGES.SCANNING && (
+                    (['가로 탐정', '세로 탐정'].includes(myRole)) ? (
+                        <DetectiveScanningView role={myRole} state={groupData} onUpdate={updateGroup} />
+                    ) : (
+                        <WaitingView text="탐정들이 특징을 분석 중입니다..." role="탐정들" />
+                    )
+                )}
+
+                {groupData.stage === STAGES.GUESSING && (
+                    myRole === '정답 대장' ? (
+                        <AnswererGuessView state={groupData} onUpdate={updateGroup} />
+                    ) : (
+                        <WaitingView text="정답 대장이 수사망을 좁히는 중..." role="정답 대장" />
+                    )
+                )}
+
+                {groupData.stage === STAGES.FINISHED && <ResultView state={groupData} onNext={nextRound} />}
+            </main>
+        </div>
+    );
+  }
+
+  return null;
+}
+
+// --- Sub Components ---
+
+function TeacherSetup({ onCreate, onBack }) {
+    const [code, setCode] = useState('');
+    const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]); 
+    const [loading, setLoading] = useState(false);
+    
+    const handleCreate = async () => {
+        setLoading(true);
+        await onCreate(code, groupsConfig);
+        setLoading(false);
+    };
+
+    const addGroup = () => setGroupsConfig([...groupsConfig, 4]);
+    const removeGroup = () => setGroupsConfig(groupsConfig.slice(0, -1));
+    const setCapacity = (index, cap) => {
+        const newConfig = [...groupsConfig];
+        newConfig[index] = cap;
+        setGroupsConfig(newConfig);
+    };
+
+    return (
+        <div className="h-screen flex items-center justify-center p-6 bg-slate-900">
+            <div className="bg-white p-8 md:p-10 rounded-[3rem] w-full max-w-lg shadow-2xl text-center">
+                <h2 className="text-3xl font-black mb-8">수업 개설하기</h2>
+                <input type="text" placeholder="수업 코드 (예: AI101)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center mb-6 outline-none focus:border-indigo-500" />
+                
+                <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl mb-4">
+                    <span className="font-bold text-slate-500 ml-2">총 모둠 수</span>
+                    <div className="flex items-center gap-4 mr-2">
+                        <button onClick={removeGroup} disabled={groupsConfig.length <= 1} className="text-2xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm disabled:opacity-30">-</button>
+                        <span className="text-2xl font-black w-8">{groupsConfig.length}</span>
+                        <button onClick={addGroup} className="text-3xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm">+</button>
                     </div>
                 </div>
-            );
-        }
 
-        function DetectiveView({ role, groupData, lessonCode, groupId, db }) {
-            const [pos, setPos] = useState({ x: 0, y: 0 });
-            const isH = role === '가로 탐정';
-            const f = isH ? FILTERS.horizontal : FILTERS.vertical;
-            const field = isH ? 'horizScores' : 'vertScores';
-            const colorClass = isH ? 'emerald' : 'rose';
-            const isDone = isH ? groupData.horizDone : groupData.vertDone;
-
-            const scan = async () => {
-                if (isDone) return;
-                let s = 0;
-                for (let r=0; r<3; r++) for (let c=0; c<3; c++) {
-                    const idx = (pos.y + r)*5 + (pos.x + c);
-                    if (groupData.imageData[idx] === 1 && f[r][c] === 1) s++;
-                }
-                const newS = [...groupData[field]]; newS[pos.y*3+pos.x] = s;
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { [field]: newS });
-            };
-
-            const finalize = async () => {
-                const updates = isH ? { horizDone: true } : { vertDone: true };
-                const otherDone = isH ? groupData.vertDone : groupData.horizDone;
-                if (otherDone) updates.stage = STAGES.GUESSING;
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), updates);
-            };
-
-            return (
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                    <div className="bg-white p-8 md:p-10 rounded-[3rem] shadow-sm flex flex-col items-center">
-                        <h3 className={`font-black mb-8 text-2xl flex items-center gap-2 text-${colorClass}-600`}><Icon name="search" size={28} /> 특징 돋보기 (CNN 필터)</h3>
-                        
-                        <div className="relative inline-block bg-slate-100 p-5 rounded-[2.5rem] mb-10 border-8 border-slate-50 shadow-inner">
-                            <div className="grid grid-cols-5 gap-2">
-                                {groupData.imageData.map((v, i) => <div key={i} className={`w-12 h-12 md:w-16 md:h-16 border rounded-xl flex items-center justify-center font-black text-xl shadow-sm ${v === 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-100'}`}>{v}</div>)}
+                <div className="bg-slate-50 p-4 rounded-2xl mb-6 border-2 border-slate-100">
+                    <p className="text-sm font-bold text-slate-500 mb-3">각 모둠별 인원 설정 (3명 / 4명)</p>
+                    <div className="grid grid-cols-2 gap-3 max-h-40 overflow-y-auto p-1">
+                        {groupsConfig.map((cap, i) => (
+                            <div key={i} className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+                                <span className="font-bold text-sm ml-2">{i+1}모둠</span>
+                                <div className="flex gap-1">
+                                    <button onClick={() => setCapacity(i, 3)} className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${cap === 3 ? 'bg-rose-500 text-white shadow-md' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>3명</button>
+                                    <button onClick={() => setCapacity(i, 4)} className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${cap === 4 ? 'bg-indigo-500 text-white shadow-md' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>4명</button>
+                                </div>
                             </div>
-                            <div className={`absolute border-[6px] border-${colorClass}-500 pointer-events-none transition-all duration-300 rounded-[1.5rem] flex flex-wrap p-1 shadow-2xl bg-white/20`} style={{ width: (16*4+8)*3+8, height: (16*4+8)*3+8, left: 20+pos.x*(16*4+8), top: 20+pos.y*(16*4+8) }}>
-                                {f.flat().map((fv, fi) => (
-                                    <div key={fi} className={`w-12 h-12 md:w-16 md:h-16 flex items-center justify-center rounded-lg ${fv === 1 ? `bg-${colorClass}-500/60 text-white` : 'border border-transparent'}`}>
-                                        {fv === 1 && <Icon name="check" size={24} className="font-black drop-shadow-md" />}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        <div className="bg-slate-50 p-6 rounded-3xl w-full max-w-sm">
-                            <div className="grid grid-cols-3 gap-3 w-48 mx-auto">
-                                <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.max(0,p.y-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-up"/></button><div/>
-                                <button onClick={() => !isDone && setPos(p => ({...p, x:Math.max(0,p.x-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-left"/></button>
-                                <button onClick={scan} disabled={isDone} className={`bg-${colorClass}-600 border-b-4 border-${colorClass}-800 text-white font-black text-lg rounded-2xl transition-all flex items-center justify-center shadow-lg ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}>SCAN</button>
-                                <button onClick={() => !isDone && setPos(p => ({...p, x:Math.min(2,p.x+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-right"/></button>
-                                <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.min(2,p.y+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-down"/></button><div/>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="bg-white p-8 md:p-10 rounded-[3rem] shadow-sm flex flex-col items-center justify-between">
-                        <div className="w-full text-center">
-                            <h3 className="font-black mb-2 text-2xl">수사 보고서</h3>
-                            <p className="text-slate-400 font-bold text-sm mb-10">스캔 버튼을 눌러 점수표를 완성하세요.</p>
-                            <div className="grid grid-cols-3 gap-4 p-6 bg-slate-50 rounded-[2.5rem] border-4 border-slate-100 w-fit mx-auto mb-8">
-                                {groupData[field].map((s, i) => (
-                                    <div key={i} className={`w-16 h-16 md:w-24 md:h-24 flex items-center justify-center font-black text-4xl rounded-2xl transition-all duration-300 ${s>0 ? `bg-${colorClass}-500 text-white shadow-xl scale-110 border-4 border-${colorClass}-400` : 'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>
-                                ))}
-                            </div>
-                        </div>
-                        {isDone ? (
-                            <div className="w-full bg-slate-100 text-slate-500 py-6 rounded-[2rem] font-black text-xl border-2 border-slate-200 mt-4 flex items-center justify-center gap-3">
-                                <Icon name="loader" className="animate-spin" /> 파트너 탐정을 기다리는 중...
-                            </div>
-                        ) : (
-                            <button onClick={finalize} className="w-full bg-slate-800 text-white py-6 rounded-[2rem] font-black text-2xl hover:bg-black transition-colors shadow-2xl mt-4">보고 완료 및 전송</button>
-                        )}
+                        ))}
                     </div>
                 </div>
-            );
-        }
 
-        // --- 정답 대장 뷰: 1글자 입력 제한 ---
-        function AnswererView({ groupData, lessonCode, groupId, db }) {
-            const [g, setG] = useState('');
+                <button onClick={handleCreate} disabled={!code || loading} className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-lg active:scale-95 disabled:opacity-50 mb-2">
+                    {loading ? '생성 중...' : '수업 시작하기'}
+                </button>
+                <button onClick={onBack} className="w-full text-slate-400 font-bold py-3 hover:text-slate-600">취소</button>
+            </div>
+        </div>
+    );
+}
+
+function TeacherDashboard({ lessonCode, db, onBack }) {
+    const [groups, setGroups] = useState([]);
+    useEffect(() => {
+        const qGroups = collection(db, 'artifacts', appId, 'public', 'data', 'lessons', lessonCode, 'groups');
+        const unsubscribe = onSnapshot(qGroups, (snap) => {
+            setGroups(snap.docs.map(doc => doc.data()).sort((a,b) => a.id.localeCompare(b.id)));
+        }, (err) => console.error(err));
+        return () => unsubscribe();
+    }, [lessonCode]);
+
+    const kickStudent = async (gId, studentUid) => {
+        const groupRef = doc(db, 'artifacts', appId, 'public', 'data', 'lessons', lessonCode, 'groups', gId);
+        const snap = await getDoc(groupRef);
+        if (snap.exists()) {
+            const members = snap.data().members || {};
+            const newMembers = { ...members };
+            delete newMembers[studentUid];
+            await updateDoc(groupRef, { members: newMembers });
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-slate-100 p-8">
+            <header className="flex justify-between items-center mb-10 max-w-6xl mx-auto">
+                <h1 className="text-3xl font-black flex items-center gap-3"><LucideLayoutDashboard className="text-indigo-600"/> 대시보드: {lessonCode}</h1>
+                <button onClick={onBack} className="bg-slate-800 text-white px-6 py-2 rounded-xl font-bold shadow-md">나가기</button>
+            </header>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
+                {groups.map(g => (
+                    <div key={g.id} className="bg-white p-6 rounded-[2rem] shadow-sm border-b-4 border-indigo-200 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 bg-amber-400 text-white px-4 py-1 font-black text-sm rounded-bl-xl shadow-sm">{g.score || 0}점</div>
+                        <div className="flex justify-between items-center font-black mb-4 pt-2">
+                            <span className="text-xl">{g.id} 모둠</span>
+                            <span className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full">R{g.round}</span>
+                        </div>
+                        <div className="text-xs font-black text-slate-400 mb-3 uppercase tracking-widest flex justify-between items-center">
+                            <span>{g.stage}</span>
+                            <span className="text-indigo-500">{Object.keys(g.members || {}).length}/{g.capacity || 4} 명</span>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1 w-fit mx-auto bg-slate-50 p-3 rounded-xl border border-slate-100 mb-4">
+                            {g.imageData?.map((v, i) => <div key={i} className={`w-4 h-4 rounded-sm ${v === 1 ? 'bg-slate-800' : 'bg-white border'}`} />)}
+                        </div>
+                        <div className="border-t-2 border-slate-100 pt-4 mt-2">
+                            <p className="text-xs font-black text-slate-400 mb-2">접속 중인 학생</p>
+                            <div className="space-y-2">
+                                {Object.values(g.members || {}).length === 0 ? (
+                                    <p className="text-sm text-slate-400 text-center py-2">없음</p>
+                                ) : (
+                                    Object.values(g.members || {}).map(m => (
+                                        <div key={m.uid} className="flex justify-between items-center bg-slate-50 px-3 py-2 rounded-xl">
+                                            <span className="text-sm font-bold text-slate-700">{m.name}</span>
+                                            <button onClick={() => kickStudent(g.id, m.uid)} className="text-xs text-rose-500 bg-rose-100 hover:bg-rose-200 px-2 py-1 rounded-lg font-black transition-colors">내보내기</button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function StudentJoin({ onJoin, onBack, db }) {
+    const [code, setCode] = useState('');
+    const [playerName, setPlayerName] = useState('');
+    const [availableGroups, setAvailableGroups] = useState([]);
+    const [step, setStep] = useState(1);
+    const [errorMsg, setErrorMsg] = useState('');
+
+    const checkLesson = async () => {
+        setErrorMsg('');
+        if (!playerName.trim()) { setErrorMsg("이름을 입력해주세요!"); return; }
+        const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lessons', code));
+        if (snap.exists()) {
+            const gSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'lessons', code, 'groups'));
+            setAvailableGroups(gSnap.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
+            setStep(2);
+        } else {
+            setErrorMsg("수업 코드를 확인해 주세요.");
+        }
+    };
+
+    return (
+        <div className="h-screen flex items-center justify-center p-6 bg-indigo-600">
+            <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
+                {step === 1 ? (
+                    <div className="text-center">
+                        <h2 className="text-3xl font-black mb-8 text-indigo-600">수업 참여</h2>
+                        <input type="text" placeholder="선생님이 알려준 코드" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-xl font-black text-center mb-4 outline-none focus:border-indigo-600" />
+                        <input type="text" placeholder="나의 이름 (예: 홍길동)" value={playerName} onChange={e => setPlayerName(e.target.value)} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-xl font-black text-center mb-6 outline-none focus:border-indigo-600" />
+                        {errorMsg && <p className="text-rose-500 font-bold mb-4">{errorMsg}</p>}
+                        <button onClick={checkLesson} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-indigo-700 active:scale-95 transition-all mb-4">모둠 찾기</button>
+                        <button onClick={onBack} className="text-slate-400 font-bold">취소</button>
+                    </div>
+                ) : (
+                    <div>
+                        <h2 className="text-2xl font-black mb-6 text-center">우리 모둠 선택</h2>
+                        {errorMsg && <p className="text-rose-500 font-bold mb-4 text-center">{errorMsg}</p>}
+                        <div className="grid grid-cols-2 gap-3 mb-6 max-h-[400px] overflow-y-auto">
+                            {availableGroups.map(g => (
+                                <button key={g.id} onClick={() => onJoin(code, g.id, playerName).catch(e => setErrorMsg(e.message))} className="bg-slate-50 p-5 rounded-2xl hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-600 transition-all font-bold flex flex-col items-center gap-2">
+                                    <span className="text-xl font-black text-slate-800">{g.id} 모둠</span>
+                                    <span className="text-xs text-indigo-500 font-black bg-indigo-100 px-3 py-1 rounded-full">{Object.keys(g.members || {}).length}/{g.capacity || 4} 명</span>
+                                </button>
+                            ))}
+                        </div>
+                        <button onClick={() => setStep(1)} className="text-slate-400 font-bold w-full text-center hover:text-slate-600">뒤로 가기</button>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function LeaderDrawingView({ state, onUpdate }) {
+    const [category, setCategory] = useState('');
+    const [answer, setAnswer] = useState('');
+
+    const PATTERN_OPTIONS = {
+        '한글': ['ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅌ', 'ㅍ', 'ㅏ', 'ㅓ', 'ㅗ', 'ㅜ'],
+        '알파벳': ['A', 'C', 'E', 'F', 'H', 'I', 'L', 'O', 'P', 'T', 'U', 'Y'],
+        '숫자': ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+    };
+
+    const toggle = (i) => {
+        if (!answer) return alert("먼저 그릴 모양을 위에서 선택해주세요!");
+        const newData = [...state.imageData]; 
+        newData[i] = newData[i] === 0 ? 1 : 0;
+        onUpdate({ imageData: newData });
+    };
+
+    const submit = () => {
+        if (!category || !answer) return alert("카테고리와 그릴 모양을 모두 선택해야 출제할 수 있습니다.");
+        const drawnCount = state.imageData.filter(v => v === 1).length;
+        if (drawnCount < 3) return alert("그림을 너무 적게 그렸어요! 특징이 나타나게 조금 더 그려주세요.");
+
+        onUpdate({ 
+            stage: STAGES.SCANNING, 
+            category: category,
+            intendedAnswer: answer,
+            horizDone: false,
+            vertDone: false
+        });
+    };
+
+    return (
+        <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-sm text-center h-full flex flex-col justify-center">
+            <h2 className="text-3xl font-black mb-2 text-blue-600">비밀 패턴 설계하기</h2>
+            <p className="text-slate-500 font-bold mb-6 text-sm">탐정들이 맞히기 쉽게 제시된 보기 중 하나를 골라 그려주세요!</p>
             
-            const submit = async () => {
-                if(!g.trim()) return alert("최종 정답을 1글자로 입력해주세요!");
-                
-                const isCorrect = g.trim().toLowerCase() === (groupData.intendedAnswer || "").trim().toLowerCase();
-                const newScore = (groupData.score || 0) + (isCorrect ? 10 : 0); 
-                
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
-                    stage: STAGES.FINISHED, 
-                    finalGuess: g.trim(),
-                    score: newScore,
-                    isCorrect: isCorrect
-                });
-            };
-
-            return (
-                <div className="space-y-8 h-full flex flex-col">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-center flex-1">
-                        <div className="bg-white p-8 rounded-[3rem] shadow-sm border-t-[12px] border-emerald-500 flex flex-col items-center justify-center">
-                            <div className="flex items-center gap-2 text-emerald-600 mb-6"><Icon name="file-text" size={24}/> <h4 className="font-black text-xl">가로 탐정 보고서</h4></div>
-                            <div className="grid grid-cols-3 gap-3 bg-slate-50 p-6 rounded-[2.5rem]"> {groupData.horizScores.map((s,i)=><div key={i} className={`w-16 h-16 flex items-center justify-center rounded-2xl font-black text-3xl transition-all ${s>0?'bg-emerald-500 text-white shadow-lg':'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>)} </div>
-                        </div>
-                        <div className="bg-white p-8 rounded-[3rem] shadow-sm border-t-[12px] border-rose-500 flex flex-col items-center justify-center">
-                            <div className="flex items-center gap-2 text-rose-600 mb-6"><Icon name="file-text" size={24}/> <h4 className="font-black text-xl">세로 탐정 보고서</h4></div>
-                            <div className="grid grid-cols-3 gap-3 bg-slate-50 p-6 rounded-[2.5rem]"> {groupData.vertScores.map((s,i)=><div key={i} className={`w-16 h-16 flex items-center justify-center rounded-2xl font-black text-3xl transition-all ${s>0?'bg-rose-500 text-white shadow-lg':'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>)} </div>
-                        </div>
-                    </div>
-                    <div className="bg-white p-12 rounded-[4rem] shadow-2xl border-4 border-amber-400 text-center relative overflow-hidden">
-                        <div className="absolute -top-10 -right-10 text-amber-100 opacity-50"><Icon name="brain-circuit" size={200}/></div>
-                        
-                        <div className="inline-block bg-amber-100 text-amber-600 font-black px-6 py-2 rounded-full mb-6 relative z-10 text-lg border border-amber-300">
-                            💡 그림 대장의 카테고리 힌트 : {groupData.category}
-                        </div>
-                        
-                        <h3 className="text-4xl font-black mb-4 font-jua text-amber-600 relative z-10">🕵️ 범인(모양) 검거하기</h3>
-                        <p className="font-bold text-slate-500 mb-8 relative z-10">어떤 모양인지 <span className="text-rose-500">단 한 글자</span>로 정확히 입력하세요! (예: ㄱ, L, 7)</p>
-                        <div className="max-w-lg mx-auto relative z-10 flex gap-4">
-                            {/* maxLength=1 설정으로 한 글자만 입력 가능 */}
-                            <input type="text" value={g} onChange={e=>setG(e.target.value)} maxLength="1" className="flex-1 p-6 border-4 border-slate-100 rounded-3xl text-center text-4xl font-black outline-none focus:border-amber-400 shadow-inner uppercase" placeholder="정답 1글자 입력" />
-                            <button onClick={submit} className="bg-amber-500 text-white px-10 rounded-3xl font-black text-2xl shadow-xl hover:bg-amber-600 transition-colors">발표!</button>
-                        </div>
+            <div className="bg-slate-50 p-6 rounded-[2rem] border-2 border-slate-100 mb-8 max-w-lg mx-auto w-full">
+                <div className="mb-4">
+                    <p className="text-sm font-black text-slate-400 mb-3 uppercase">1. 어떤 종류를 그릴까요?</p>
+                    <div className="flex flex-wrap gap-2 justify-center">
+                        {Object.keys(PATTERN_OPTIONS).map(c => (
+                            <button key={c} onClick={() => {setCategory(c); setAnswer('');}} 
+                                className={`px-5 py-2 rounded-xl font-black transition-all ${category === c ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-slate-400 border border-slate-200 hover:border-blue-300'}`}>
+                                {c}
+                            </button>
+                        ))}
                     </div>
                 </div>
-            );
-        }
-
-        function ResultView({ groupData, lessonCode, groupId, db }) {
-            const next = async () => {
-                const capacity = groupData.capacity || 4;
-                const memberUids = Object.keys(groupData.members);
-                
-                let indices = Array.from({length: capacity}, (_, i) => i);
-                indices.sort(() => Math.random() - 0.5); 
-                
-                const newMembers = { ...groupData.members };
-                memberUids.forEach((uid, i) => {
-                    newMembers[uid].baseIndex = indices[i];
-                });
-
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), {
-                    round: groupData.round + 1, stage: STAGES.LOBBY, finalGuess: '', intendedAnswer: '', category: '',
-                    imageData: Array(25).fill(0), horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
-                    members: newMembers, isCorrect: null, horizDone: false, vertDone: false
-                });
-            };
-
-            const isCorrect = groupData.isCorrect;
-
-            return (
-                <div className="bg-white p-12 md:p-20 rounded-[4rem] text-center shadow-xl border-4 border-indigo-100">
-                    <h2 className={`text-5xl md:text-6xl font-black mb-12 font-jua tracking-tighter ${isCorrect ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        {isCorrect ? "🎉 정답입니다! (+10점)" : "😢 아쉽게도 틀렸습니다..."}
-                    </h2>
-                    
-                    <div className="flex flex-col md:flex-row justify-center gap-10 md:gap-24 mb-16 items-center">
-                        <div className="bg-slate-50 p-10 rounded-[3rem] border-4 border-slate-100 shadow-inner">
-                            <p className="text-slate-400 font-bold mb-6 uppercase tracking-widest text-sm">원본 데이터</p>
-                            <div className="grid grid-cols-5 gap-2 inline-grid"> {groupData.imageData.map((v,i)=><div key={i} className={`w-10 h-10 md:w-12 md:h-12 rounded-xl shadow-sm ${v===1?'bg-slate-800':'bg-white'}`} />)} </div>
-                            <p className="mt-6 font-black text-xl text-slate-700">진짜 정답: <span className="text-blue-600">{groupData.intendedAnswer}</span></p>
+                {category && (
+                    <div className="mt-6 pt-6 border-t-2 border-slate-200 transition-all duration-300">
+                        <p className="text-sm font-black text-slate-400 mb-3 uppercase">2. 그릴 모양 선택</p>
+                        <div className="flex flex-wrap gap-2 justify-center">
+                            {PATTERN_OPTIONS[category].map(char => (
+                                <button key={char} onClick={() => setAnswer(char)} 
+                                    className={`w-12 h-12 rounded-xl font-black text-2xl transition-all ${answer === char ? 'bg-amber-400 text-white shadow-md scale-110' : 'bg-white text-slate-500 border border-slate-200 hover:border-amber-300 hover:bg-amber-50'}`}>
+                                    {char}
+                                </button>
+                            ))}
                         </div>
-                        <div className="text-center">
-                            <p className="text-slate-400 font-bold mb-4 uppercase tracking-widest text-sm">정답 대장의 추리</p>
-                            <div className={`px-12 py-8 rounded-[3rem] border-4 ${isCorrect ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-rose-50 border-rose-200 text-rose-600'}`}>
-                                <h3 className="text-6xl font-black">{groupData.finalGuess || '?'}</h3>
+                        <p className="text-xs font-bold text-amber-500 mt-4">💡 팁: 5x5 칸에 꽉 차게, 굵직하게 그리면 탐정들이 더 쉽게 맞힐 수 있어요!</p>
+                    </div>
+                )}
+            </div>
+
+            <div className={`transition-opacity duration-500 ${answer ? 'opacity-100' : 'opacity-40'}`}>
+                <p className="font-black text-blue-600 mb-4">{answer ? `선택한 '${answer}' 모양을 아래 격자에 예쁘게 그려주세요!` : '먼저 모양을 선택해야 그릴 수 있어요.'}</p>
+                <div className="grid grid-cols-5 gap-3 p-6 bg-slate-50 rounded-[3rem] inline-grid mb-10 border-4 border-slate-100 shadow-inner mx-auto">
+                    {state.imageData.map((v, i) => (
+                        <button key={i} onClick={() => toggle(i)} className={`w-12 h-12 md:w-16 md:h-16 rounded-2xl border-2 transition-all duration-200 ${v === 1 ? 'bg-slate-800 border-slate-900 shadow-lg scale-105' : 'bg-white border-slate-200'}`} />
+                    ))}
+                </div>
+                <button onClick={submit} className={`w-full max-w-sm mx-auto py-5 rounded-[2rem] font-black text-2xl flex items-center justify-center gap-3 shadow-xl transition-all ${answer ? 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}>
+                    <LucideSend size={28} /> 탐정들에게 출제하기
+                </button>
+            </div>
+        </div>
+    );
+}
+
+function DetectiveScanningView({ role, state, onUpdate }) {
+    const [pos, setPos] = useState({ x: 0, y: 0 });
+    const isH = role === '가로 탐정';
+    const f = isH ? FILTERS.horizontal : FILTERS.vertical;
+    const field = isH ? 'horizScores' : 'vertScores';
+    const colorClass = isH ? 'text-emerald-600' : 'text-rose-600';
+    const borderClass = isH ? 'border-emerald-500' : 'border-rose-500';
+    const bgClass = isH ? 'bg-emerald-500' : 'bg-rose-500';
+    const isDone = isH ? state.horizDone : state.vertDone;
+
+    const scan = () => {
+        if (isDone) return;
+        let s = 0;
+        for (let r=0; r<3; r++) for (let c=0; c<3; c++) {
+            const idx = (pos.y + r)*5 + (pos.x + c);
+            if (state.imageData[idx] === 1 && f[r][c] === 1) s++;
+        }
+        const newS = [...state[field]]; newS[pos.y*3+pos.x] = s;
+        onUpdate({ [field]: newS });
+    };
+
+    const finalize = () => {
+        const updates = isH ? { horizDone: true } : { vertDone: true };
+        const otherDone = isH ? state.vertDone : state.horizDone;
+        if (otherDone) {
+            updates.stage = STAGES.GUESSING;
+        }
+        onUpdate(updates);
+    };
+
+    return (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+            <div className="bg-white p-8 md:p-10 rounded-[3rem] shadow-sm flex flex-col items-center">
+                <h3 className={`font-black mb-8 text-2xl flex items-center gap-2 ${colorClass}`}><LucideSearch size={28} /> 특징 돋보기 (CNN 필터)</h3>
+                
+                <div className="relative inline-block bg-slate-100 p-5 rounded-[2.5rem] mb-10 border-8 border-slate-50 shadow-inner">
+                    <div className="grid grid-cols-5 gap-2">
+                        {state.imageData.map((v, i) => <div key={i} className={`w-12 h-12 md:w-16 md:h-16 border rounded-xl flex items-center justify-center font-black text-xl shadow-sm ${v === 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-100'}`}>{v}</div>)}
+                    </div>
+                    <div className={`absolute border-[6px] ${borderClass} pointer-events-none transition-all duration-300 rounded-[1.5rem] flex flex-wrap p-1 shadow-2xl bg-white/20`} style={{ width: (16*4+8)*3+8, height: (16*4+8)*3+8, left: 20+pos.x*(16*4+8), top: 20+pos.y*(16*4+8) }}>
+                        {f.flat().map((fv, fi) => (
+                            <div key={fi} className={`w-12 h-12 md:w-16 md:h-16 flex items-center justify-center rounded-lg ${fv === 1 ? `${bgClass}/60 text-white` : 'border border-transparent'}`}>
+                                {fv === 1 && <LucideCheck size={24} className="font-black drop-shadow-md" />}
                             </div>
-                        </div>
+                        ))}
                     </div>
-                    <button onClick={next} className="bg-indigo-600 text-white px-16 py-6 rounded-[2.5rem] font-black text-3xl flex items-center justify-center gap-4 mx-auto shadow-xl hover:bg-indigo-700 transition-all active:scale-95"><Icon name="refresh-ccw" size={32} /> 다음 라운드 시작!</button>
-                    <p className="mt-8 text-slate-400 font-bold text-lg">※ 다음 판부터는 역할이 <span className="text-indigo-600">완전 랜덤</span>으로 바뀝니다!</p>
                 </div>
-            );
-        }
 
-        function Waiting({ text, role }) {
-            return (
-                <div className="h-full flex flex-col items-center justify-center p-12 text-center">
-                    <div className="w-32 h-32 bg-white rounded-[2.5rem] shadow-xl flex items-center justify-center mb-10"><Icon name="refresh-ccw" className="animate-spin text-indigo-200" size={64} /></div>
-                    <p className="text-3xl font-black text-slate-400 italic mb-4 tracking-tight">{text}</p>
-                    <div className="bg-indigo-50 px-6 py-2 rounded-full text-sm font-black text-indigo-400 uppercase tracking-widest">{role} 단계입니다.</div>
+                <div className="bg-slate-50 p-6 rounded-3xl w-full max-w-sm">
+                    <div className="grid grid-cols-3 gap-3 w-48 mx-auto">
+                        <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.max(0,p.y-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><LucideChevronUp/></button><div/>
+                        <button onClick={() => !isDone && setPos(p => ({...p, x:Math.max(0,p.x-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><LucideChevronLeft/></button>
+                        <button onClick={scan} disabled={isDone} className={`${bgClass} border-b-4 border-slate-800/20 text-white font-black text-lg rounded-2xl transition-all flex items-center justify-center shadow-lg ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}>SCAN</button>
+                        <button onClick={() => !isDone && setPos(p => ({...p, x:Math.min(2,p.x+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><LucideChevronRight/></button>
+                        <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.min(2,p.y+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><LucideChevronDown/></button><div/>
+                    </div>
                 </div>
-            );
-        }
+            </div>
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+            <div className="bg-white p-8 md:p-10 rounded-[3rem] shadow-sm flex flex-col items-center justify-between">
+                <div className="w-full text-center">
+                    <h3 className="font-black mb-2 text-2xl">수사 보고서</h3>
+                    <p className="text-slate-400 font-bold text-sm mb-10">스캔 버튼을 눌러 점수표를 완성하세요.</p>
+                    <div className="grid grid-cols-3 gap-4 p-6 bg-slate-50 rounded-[2.5rem] border-4 border-slate-100 w-fit mx-auto mb-8">
+                        {state[field].map((s, i) => (
+                            <div key={i} className={`w-16 h-16 md:w-24 md:h-24 flex items-center justify-center font-black text-4xl rounded-2xl transition-all duration-300 ${s>0 ? `${bgClass} text-white shadow-xl scale-110 border-4 border-slate-800/10` : 'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>
+                        ))}
+                    </div>
+                </div>
+                {isDone ? (
+                    <div className="w-full bg-slate-100 text-slate-500 py-6 rounded-[2rem] font-black text-xl border-2 border-slate-200 mt-4 flex items-center justify-center gap-3">
+                        <LucideRefreshCcw className="animate-spin" /> 파트너 탐정을 기다리는 중...
+                    </div>
+                ) : (
+                    <button onClick={finalize} className="w-full bg-slate-800 text-white py-6 rounded-[2rem] font-black text-2xl hover:bg-black transition-colors shadow-2xl mt-4">보고 완료 및 전송</button>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function AnswererGuessView({ state, onUpdate }) {
+    const [guess, setGuess] = useState('');
+    
+    const submit = () => {
+        if(!guess.trim()) return alert("최종 정답을 1글자로 입력해주세요!");
+        
+        const isCorrect = guess.trim().toLowerCase() === (state.intendedAnswer || "").trim().toLowerCase();
+        const newScore = (state.score || 0) + (isCorrect ? 10 : 0); 
+        
+        onUpdate({ 
+            stage: STAGES.FINISHED, 
+            finalGuess: guess.trim(),
+            score: newScore,
+            isCorrect: isCorrect
+        });
+    };
+
+    return (
+        <div className="space-y-8 h-full flex flex-col">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-center flex-1">
+                <div className="bg-white p-8 rounded-[3rem] shadow-sm border-t-[12px] border-emerald-500 flex flex-col items-center justify-center">
+                    <div className="flex items-center gap-2 text-emerald-600 mb-6"><LucideFileText size={24}/> <h4 className="font-black text-xl">가로 탐정 보고서</h4></div>
+                    <div className="grid grid-cols-3 gap-3 bg-slate-50 p-6 rounded-[2.5rem]"> {state.horizScores.map((s,i)=><div key={i} className={`w-16 h-16 flex items-center justify-center rounded-2xl font-black text-3xl transition-all ${s>0?'bg-emerald-500 text-white shadow-lg':'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>)} </div>
+                </div>
+                <div className="bg-white p-8 rounded-[3rem] shadow-sm border-t-[12px] border-rose-500 flex flex-col items-center justify-center">
+                    <div className="flex items-center gap-2 text-rose-600 mb-6"><LucideFileText size={24}/> <h4 className="font-black text-xl">세로 탐정 보고서</h4></div>
+                    <div className="grid grid-cols-3 gap-3 bg-slate-50 p-6 rounded-[2.5rem]"> {state.vertScores.map((s,i)=><div key={i} className={`w-16 h-16 flex items-center justify-center rounded-2xl font-black text-3xl transition-all ${s>0?'bg-rose-500 text-white shadow-lg':'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>)} </div>
+                </div>
+            </div>
+            <div className="bg-white p-12 rounded-[4rem] shadow-2xl border-4 border-amber-400 text-center relative overflow-hidden">
+                <div className="absolute -top-10 -right-10 text-amber-100 opacity-50"><LucideBrainCircuit size={200}/></div>
+                
+                <div className="inline-block bg-amber-100 text-amber-600 font-black px-6 py-2 rounded-full mb-6 relative z-10 text-lg border border-amber-300">
+                    💡 그림 대장의 카테고리 힌트 : {state.category}
+                </div>
+                
+                <h3 className="text-4xl font-black mb-4 text-amber-600 relative z-10">🕵️ 범인(모양) 검거하기</h3>
+                <p className="font-bold text-slate-500 mb-8 relative z-10">어떤 모양인지 <span className="text-rose-500">단 한 글자</span>로 정확히 입력하세요! (예: ㄱ, L, 7)</p>
+                <div className="max-w-lg mx-auto relative z-10 flex gap-4">
+                    <input type="text" value={guess} onChange={e=>setGuess(e.target.value)} maxLength="1" className="flex-1 p-6 border-4 border-slate-100 rounded-3xl text-center text-4xl font-black outline-none focus:border-amber-400 shadow-inner uppercase" placeholder="정답 1글자 입력" />
+                    <button onClick={submit} className="bg-amber-500 text-white px-10 rounded-3xl font-black text-2xl shadow-xl hover:bg-amber-600 transition-colors">발표!</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ResultView({ state, onNext }) {
+    const isCorrect = state.isCorrect;
+
+    return (
+        <div className="bg-white p-12 md:p-20 rounded-[4rem] text-center shadow-xl border-4 border-indigo-100">
+            <h2 className={`text-5xl md:text-6xl font-black mb-12 tracking-tighter ${isCorrect ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {isCorrect ? "🎉 정답입니다! (+10점)" : "😢 아쉽게도 틀렸습니다..."}
+            </h2>
+            
+            <div className="flex flex-col md:flex-row justify-center gap-10 md:gap-24 mb-16 items-center">
+                <div className="bg-slate-50 p-10 rounded-[3rem] border-4 border-slate-100 shadow-inner">
+                    <p className="text-slate-400 font-bold mb-6 uppercase tracking-widest text-sm">원본 데이터</p>
+                    <div className="grid grid-cols-5 gap-2 inline-grid"> {state.imageData.map((v,i)=><div key={i} className={`w-10 h-10 md:w-12 md:h-12 rounded-xl shadow-sm ${v===1?'bg-slate-800':'bg-white'}`} />)} </div>
+                    <p className="mt-6 font-black text-xl text-slate-700">진짜 정답: <span className="text-blue-600">{state.intendedAnswer}</span></p>
+                </div>
+                <div className="text-center">
+                    <p className="text-slate-400 font-bold mb-4 uppercase tracking-widest text-sm">정답 대장의 추리</p>
+                    <div className={`px-12 py-8 rounded-[3rem] border-4 ${isCorrect ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-rose-50 border-rose-200 text-rose-600'}`}>
+                        <h3 className="text-6xl font-black">{state.finalGuess || '?'}</h3>
+                    </div>
+                </div>
+            </div>
+            <button onClick={onNext} className="bg-indigo-600 text-white px-16 py-6 rounded-[2.5rem] font-black text-3xl flex items-center justify-center gap-4 mx-auto shadow-xl hover:bg-indigo-700 transition-all active:scale-95"><LucideRefreshCcw size={32} /> 다음 라운드 시작!</button>
+            <p className="mt-8 text-slate-400 font-bold text-lg">※ 다음 판부터는 역할이 <span className="text-indigo-600">완전 랜덤</span>으로 바뀝니다!</p>
+        </div>
+    );
+}
+
+function WaitingView({ text, role }) {
+    return (
+        <div className="h-full flex flex-col items-center justify-center p-12 text-center">
+            <div className="w-32 h-32 bg-white rounded-[2.5rem] shadow-xl flex items-center justify-center mb-10"><LucideRefreshCcw className="animate-spin text-indigo-200" size={64} /></div>
+            <p className="text-3xl font-black text-slate-400 italic mb-4 tracking-tight">{text}</p>
+            <div className="bg-indigo-50 px-6 py-2 rounded-full text-sm font-black text-indigo-400 uppercase tracking-widest">{role} 단계입니다.</div>
+        </div>
+    );
+}
