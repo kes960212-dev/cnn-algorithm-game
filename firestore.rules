@@ -65,7 +65,7 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list: if false;
       allow create: if signedIn()
-        && code.matches('^[A-Z0-9]{2,12}$')
+        && code.matches('^[A-Z0-9가-힣]{1,12}$')
         && validLesson(request.resource.data, code);
       allow update: if signedIn()
         && resource.data.ownerUid == request.auth.uid
