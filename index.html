@@ -5,24 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI 패턴 탐정단 - CNN 알고리즘 체험</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;700;900&display=swap');
         body { font-family: 'Noto Sans KR', sans-serif; }
         .font-jua { font-family: 'Jua', sans-serif; }
         .grid-bg { background-image: radial-gradient(#e2e8f0 1px, transparent 1px); background-size: 20px 20px; }
+        button { touch-action: manipulation; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800 grid-bg">
-    <div id="root"></div>
+    <div id="root">
+        <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-weight:700;color:#94a3b8">불러오는 중...</div>
+    </div>
 
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, collection, getDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, collection, getDoc, getDocs, deleteDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyBcci9JE7Py_WfxoJ-KKAXT8ckcCsjxNII",
@@ -38,9 +41,8 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
-        const GRID_SIZE = 5;
         const FILTERS = {
             horizontal: [[0, 0, 0], [1, 1, 1], [0, 0, 0]],
             vertical: [[0, 1, 0], [0, 1, 0], [0, 1, 0]]
@@ -65,8 +67,14 @@
             }
         };
 
+        // 4명이면 그림 대장이 출제, 3명이면 문제가 자동으로 나온다
+        const ROLES4 = ['그림 대장', '가로 탐정', '세로 탐정', '정답 대장'];
+        const ROLES3 = ['가로 탐정', '세로 탐정', '정답 대장'];
+        const MIN_PLAYERS = 3;
+
         const STAGES = { LOBBY: 'lobby', DRAWING: 'drawing', SCANNING: 'scanning', GUESSING: 'guessing', FINISHED: 'finished' };
-        
+        const STAGE_LABEL = { lobby: '대기실', drawing: '그림 그리는 중', scanning: '스캔 중', guessing: '정답 추리 중', finished: '결과 확인' };
+
         // 3인 모둠용 자동 문제 출제 (카테고리 포함)
         const EASY_PATTERNS = [
             { name: 'ㄱ', category: '한글', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1] },
@@ -77,116 +85,309 @@
             { name: '7', category: '숫자', data: [1,1,1,1,1, 0,0,0,0,1, 0,0,0,1,0, 0,0,1,0,0, 0,0,1,0,0] }
         ];
 
-        const Icon = ({ name, size = 24, className = "" }) => <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        /* --- 공통 도우미 --- */
+        const SESSION_KEY = 'cnnGame.session';         // 학생: { code, groupId, name }
+        const TEACHER_KEY = 'cnnGame.teacherLesson';   // 교사: 마지막으로 연 수업 코드
+        const loadJSON = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
+        const saveJSON = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+        const cleanName = (s) => (s || '').replace(/\s+/g, ' ').trim().slice(0, 12);
+        const sameName = (a, b) => cleanName(a).toLowerCase() === cleanName(b).toLowerCase();
+        const normalizeSeats = (seats, cap) => Array.from({ length: cap }, (_, i) => (Array.isArray(seats) && seats[i]) ? seats[i] : null);
+        const normalizeRoles = (roles, cap) => Array.from({ length: cap }, (_, i) => (Array.isArray(roles) && roles[i]) ? roles[i] : null);
+        const groupRef = (code, gId) => doc(db, 'lessons', code, 'groups', gId);
+        const groupNo = (id) => parseInt(String(id).replace(/\D/g, ''), 10) || 0;
+        const sortGroups = (arr) => arr.sort((a, b) => groupNo(a.id) - groupNo(b.id));
+
+        const freshBoard = (cap) => ({
+            imageData: Array(25).fill(0), horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
+            horizDone: false, vertDone: false, category: '', intendedAnswer: '', finalGuess: '', isCorrect: null,
+            roleBySeat: Array(cap).fill(null)
+        });
+
+        const errMsg = (e) => {
+            const code = e?.code || e?.message || '';
+            if (code === 'FULL') return '모둠 자리가 다 찼어요. 원래 이 모둠이었다면 처음에 쓴 이름 그대로 입력해 보세요.';
+            if (code === 'NO_GROUP') return '없는 모둠입니다. 수업 코드를 다시 확인해 주세요.';
+            if (code === 'NEED_PLAYERS') return `${MIN_PLAYERS}명 이상 모여야 시작할 수 있어요.`;
+            if (String(code).includes('permission')) return '권한이 없어요. 선생님께 알려 주세요.';
+            if (String(code).includes('unavailable') || String(code).includes('network')) return '인터넷 연결이 불안정해요. 잠시 후 다시 눌러 주세요.';
+            return '문제가 생겼어요. 잠시 후 다시 시도해 주세요.';
+        };
+
+        // lucide 아이콘을 React가 직접 그리도록 함
+        // (lucide.createIcons()로 DOM을 바꿔치기하면 React 화면이 깨져 튕기는 원인이 됨)
+        const toPascal = (n) => n.split('-').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
+        const toCamelProps = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), v]));
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const node = window.lucide?.icons?.[toPascal(name)];
+            if (!node) return <span className={className} style={{ display: 'inline-block', width: size, height: size }} />;
+            const [, attrs, children] = node;
+            return (
+                <svg {...toCamelProps(attrs)} width={size} height={size} className={className}>
+                    {(children || []).map(([tag, a], i) => React.createElement(tag, { key: i, ...toCamelProps(a) }))}
+                </svg>
+            );
+        };
+
+        function useCellSize() {
+            const calc = () => (window.innerWidth >= 768 ? 64 : 48);
+            const [size, setSize] = useState(calc);
+            useEffect(() => {
+                const onResize = () => setSize(calc());
+                window.addEventListener('resize', onResize);
+                return () => window.removeEventListener('resize', onResize);
+            }, []);
+            return size;
+        }
 
         function App() {
             const [user, setUser] = useState(null);
-            const [view, setView] = useState('main'); 
+            const [authError, setAuthError] = useState(false);
+            const [view, setView] = useState('main');
             const [lessonCode, setLessonCode] = useState('');
             const [groupId, setGroupId] = useState(null);
+            const [myName, setMyName] = useState('');
             const [groupData, setGroupData] = useState(null);
+            const [reconnecting, setReconnecting] = useState(false);
+            const [notice, setNotice] = useState('');
+            const [online, setOnline] = useState(navigator.onLine);
+            const resumed = useRef(false);
+
+            const signIn = () => {
+                setAuthError(false);
+                signInAnonymously(auth).catch(e => { console.error(e); setAuthError(true); });
+            };
 
             useEffect(() => {
-                signInAnonymously(auth).catch(e => console.error(e));
-                const unsubscribe = onAuthStateChanged(auth, setUser);
-                return () => unsubscribe();
+                const unsubscribe = onAuthStateChanged(auth, (u) => { if (u) setUser(u); });
+                signIn();
+                const on = () => setOnline(true), off = () => setOnline(false);
+                window.addEventListener('online', on); window.addEventListener('offline', off);
+                return () => { unsubscribe(); window.removeEventListener('online', on); window.removeEventListener('offline', off); };
             }, []);
 
-            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [view, groupData?.stage]);
+            // 새로고침·튕김 후 다시 열면 원래 모둠·자리로 자동 복귀
+            useEffect(() => {
+                if (!user || resumed.current) return;
+                resumed.current = true;
+                const s = loadJSON(SESSION_KEY);
+                if (s?.code && s?.groupId && s?.name) {
+                    setReconnecting(true);
+                    joinGroup(s.code, s.groupId, s.name, true).finally(() => setReconnecting(false));
+                }
+            }, [user]);
 
             useEffect(() => {
                 if (!user || !lessonCode || !groupId || view !== 'student_game') return;
-                const unsubscribe = onSnapshot(doc(db, 'lessons', lessonCode, 'groups', groupId), (snap) => {
-                    if (snap.exists()) setGroupData(snap.data());
-                });
+                const unsubscribe = onSnapshot(groupRef(lessonCode, groupId),
+                    (snap) => {
+                        if (snap.exists()) { setGroupData(snap.data()); setNotice(''); }
+                        else { setNotice('모둠 정보가 사라졌어요. 선생님께 수업 코드를 다시 확인해 주세요.'); }
+                    },
+                    (err) => { console.error(err); setNotice(errMsg(err)); }
+                );
                 return () => unsubscribe();
             }, [user, lessonCode, groupId, view]);
 
             const createLesson = async (code, groupsConfig) => {
                 if (!user) return;
                 try {
-                    await setDoc(doc(db, 'lessons', code), { code, groupCount: groupsConfig.length, createdAt: Date.now() });
+                    const lRef = doc(db, 'lessons', code);
+                    const existing = await getDoc(lRef);
+                    if (existing.exists() && existing.data().ownerUid !== user.uid) {
+                        alert("이미 사용 중인 수업 코드예요. 다른 코드를 입력해 주세요.");
+                        return;
+                    }
+                    if (existing.exists()) {
+                        // 같은 선생님이 같은 코드로 다시 개설: 남는 옛 모둠은 지운다
+                        const old = await getDocs(collection(db, 'lessons', code, 'groups'));
+                        const keep = new Set(groupsConfig.map((_, i) => `G${i + 1}`));
+                        await Promise.all(old.docs.filter(d => !keep.has(d.id)).map(d => deleteDoc(d.ref)));
+                    }
+                    await setDoc(lRef, { code, groupCount: groupsConfig.length, createdAt: Date.now(), ownerUid: user.uid });
                     for (let i = 0; i < groupsConfig.length; i++) {
-                        const id = `G${i+1}`;
-                        await setDoc(doc(db, 'lessons', code, 'groups', id), {
-                            id, stage: STAGES.LOBBY, round: 1, imageData: Array(25).fill(0),
-                            horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
-                            members: {}, capacity: groupsConfig[i], score: 0,
-                            horizDone: false, vertDone: false
+                        const id = `G${i + 1}`;
+                        const cap = groupsConfig[i];
+                        await setDoc(groupRef(code, id), {
+                            id, capacity: cap, stage: STAGES.LOBBY, round: 1, score: 0,
+                            seats: Array(cap).fill(null), ...freshBoard(cap)
                         });
                     }
-                    setLessonCode(code); setView('teacher_dash'); 
-                } catch (e) { alert("오류 발생! Firestore 규칙을 확인하세요."); console.error(e); }
+                    saveJSON(TEACHER_KEY, code);
+                    setLessonCode(code); setView('teacher_dash');
+                } catch (e) { alert("수업을 만들지 못했어요. " + errMsg(e)); console.error(e); }
             };
 
-            const joinGroup = async (code, gId) => {
-                if (!user) return;
+            const openDashboard = async (code) => {
+                const s = await getDoc(doc(db, 'lessons', code)).catch(() => null);
+                if (!s || !s.exists()) { alert("없는 수업 코드예요."); return; }
+                saveJSON(TEACHER_KEY, code);
+                setLessonCode(code); setView('teacher_dash');
+            };
+
+            // 자리 배정: 같은 기기(uid) → 같은 이름 → 빈자리 순서로 찾는다. 트랜잭션이라 동시에 들어와도 자리가 겹치지 않음
+            const joinGroup = async (code, gId, rawName, silent = false) => {
+                if (!user) return false;
+                const name = cleanName(rawName);
+                if (!name) { if (!silent) alert("이름을 입력해 주세요."); return false; }
                 try {
-                    const gRef = doc(db, 'lessons', code, 'groups', gId);
-                    const snap = await getDoc(gRef);
-                    if (!snap.exists()) { alert("없는 모둠입니다."); return; }
-                    const groupInfo = snap.data();
-                    const members = groupInfo.members || {};
-                    const capacity = groupInfo.capacity || 4;
-                    if (!members[user.uid]) {
-                        if (Object.keys(members).length >= capacity) { alert("정원이 찼습니다!"); return; }
-                        const usedIdx = Object.values(members).map(m => m.baseIndex);
-                        let freeIdx = 0; while (usedIdx.includes(freeIdx)) freeIdx++;
-                        await updateDoc(gRef, { [`members.${user.uid}`]: { uid: user.uid, baseIndex: freeIdx } });
+                    await runTransaction(db, async (tx) => {
+                        const snap = await tx.get(groupRef(code, gId));
+                        if (!snap.exists()) throw new Error('NO_GROUP');
+                        const d = snap.data();
+                        const cap = d.capacity || 4;
+                        const seats = normalizeSeats(d.seats, cap);
+                        let idx = seats.findIndex(s => s && s.uid === user.uid);
+                        if (idx === -1) idx = seats.findIndex(s => s && sameName(s.name, name));
+                        if (idx === -1) idx = seats.findIndex(s => !s);
+                        if (idx === -1) throw new Error('FULL');
+                        if (seats[idx] && seats[idx].uid === user.uid && seats[idx].name === name) return;
+                        seats[idx] = { uid: user.uid, name };
+                        tx.update(groupRef(code, gId), { seats });
+                    });
+                    saveJSON(SESSION_KEY, { code, groupId: gId, name });
+                    if (gId !== groupId || code !== lessonCode) setGroupData(null);
+                    setMyName(name); setLessonCode(code); setGroupId(gId); setView('student_game'); setNotice('');
+                    return true;
+                } catch (e) {
+                    console.error(e);
+                    if (silent) {
+                        if (e?.message === 'NO_GROUP' || e?.message === 'FULL') saveJSON(SESSION_KEY, null);
+                        setNotice('원래 모둠으로 자동 복귀하지 못했어요. ' + errMsg(e));
+                    } else alert(errMsg(e));
+                    return false;
+                }
+            };
+
+            const leave = async () => {
+                if (!confirm("수업에서 나갈까요?\n(게임 중에 나가도 같은 이름으로 다시 들어오면 원래 역할로 돌아와요)")) return;
+                try {
+                    // 대기실에서 나가면 자리를 비워 준다 (게임 중에는 역할이 사라지지 않게 자리를 남겨 둠)
+                    if (groupData?.stage === STAGES.LOBBY) {
+                        await runTransaction(db, async (tx) => {
+                            const snap = await tx.get(groupRef(lessonCode, groupId));
+                            if (!snap.exists()) return;
+                            const d = snap.data();
+                            if (d.stage !== STAGES.LOBBY) return;
+                            const seats = normalizeSeats(d.seats, d.capacity || 4);
+                            const idx = seats.findIndex(s => s && s.uid === user.uid);
+                            if (idx === -1) return;
+                            seats[idx] = null;
+                            tx.update(groupRef(lessonCode, groupId), { seats });
+                        });
                     }
-                    setLessonCode(code); setGroupId(gId); setView('student_game');
                 } catch (e) { console.error(e); }
+                saveJSON(SESSION_KEY, null);
+                setGroupId(null); setGroupData(null); setView('main');
             };
 
-            const getMyRole = () => {
-                if (!groupData || !user || !groupData.members?.[user.uid]) return null;
-                const capacity = groupData.capacity || 4;
-                const bIdx = groupData.members[user.uid].baseIndex;
-                return capacity === 3 ? ['가로 탐정', '세로 탐정', '정답 대장'][bIdx % 3] : Object.keys(ROLE_INFO)[bIdx % 4];
-            };
+            const OfflineBar = () => !online ? (
+                <div className="fixed top-0 inset-x-0 z-50 bg-rose-500 text-white text-center py-2 font-black text-sm flex items-center justify-center gap-2">
+                    <Icon name="wifi-off" size={18} /> 인터넷 연결이 끊겼어요. 다시 연결되면 자동으로 이어집니다.
+                </div>
+            ) : null;
 
-            if (view === 'main') return (
-                <div className="min-h-screen flex flex-col items-center justify-center p-6 max-w-5xl mx-auto">
-                    <div className="text-center mb-10">
-                        <div className="bg-indigo-600 text-white p-5 rounded-3xl inline-block mb-4 shadow-xl"><Icon name="brain-circuit" size={64} /></div>
-                        <h1 className="text-5xl font-black font-jua tracking-tighter text-indigo-600 mb-2">AI 패턴 탐정단</h1>
-                        <p className="text-slate-500 font-bold text-lg">인공지능의 특징 추출 알고리즘(CNN) 체험</p>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10 w-full">
-                        {Object.entries(ROLE_INFO).map(([name, info]) => (
-                            <div key={name} className="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-slate-200 text-center flex flex-col items-center">
-                                <div className={`${info.bg} ${info.color} w-14 h-14 rounded-full flex items-center justify-center mb-4`}><Icon name={info.icon} size={28} /></div>
-                                <h3 className="font-black text-lg mb-2">{name}</h3>
-                                <p className="text-xs text-slate-500 font-bold">{info.desc}</p>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-6 w-full max-w-2xl">
-                        <button onClick={() => setView('teacher_setup')} className="flex-1 bg-white text-indigo-600 py-6 rounded-[2rem] font-black text-xl shadow-xl hover:bg-indigo-50 border-2 border-indigo-100 flex items-center justify-center gap-3"><Icon name="layout-dashboard"/> 선생님 메뉴</button>
-                        <button onClick={() => setView('student_join')} className="flex-1 bg-indigo-600 text-white py-6 rounded-[2rem] font-black text-xl shadow-xl hover:bg-indigo-700 flex items-center justify-center gap-3"><Icon name="users"/> 탐정 입장</button>
-                    </div>
+            if (authError) return (
+                <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                    <p className="text-2xl font-black text-slate-600 mb-6">서버에 연결하지 못했어요.</p>
+                    <button onClick={signIn} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black text-xl">다시 연결하기</button>
                 </div>
             );
 
-            if (view === 'teacher_setup') return <TeacherSetup onCreate={createLesson} onBack={() => setView('main')} />;
-            if (view === 'teacher_dash') return <TeacherDashboard lessonCode={lessonCode} db={db} onBack={() => setView('main')} />;
-            if (view === 'student_join') return <StudentJoin onJoin={joinGroup} onBack={() => setView('main')} db={db} />;
+            if (!user || reconnecting) return (
+                <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                    <OfflineBar />
+                    <Icon name="loader" size={48} className="animate-spin text-indigo-400 mb-6" />
+                    <p className="text-xl font-black text-slate-500">{reconnecting ? '원래 모둠으로 다시 연결하는 중...' : '연결하는 중...'}</p>
+                </div>
+            );
 
-            if (view === 'student_game' && groupData) {
-                const myRole = getMyRole();
+            if (view === 'main') {
+                const savedTeacher = loadJSON(TEACHER_KEY);
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 max-w-5xl mx-auto">
+                        <OfflineBar />
+                        <div className="text-center mb-10">
+                            <div className="bg-indigo-600 text-white p-5 rounded-3xl inline-block mb-4 shadow-xl"><Icon name="brain-circuit" size={64} /></div>
+                            <h1 className="text-5xl font-black font-jua tracking-tighter text-indigo-600 mb-2">AI 패턴 탐정단</h1>
+                            <p className="text-slate-500 font-bold text-lg">인공지능의 특징 추출 알고리즘(CNN) 체험</p>
+                        </div>
+
+                        {notice && <div className="w-full max-w-2xl bg-amber-50 border-2 border-amber-200 text-amber-700 font-bold rounded-2xl p-4 mb-6 text-center">{notice}</div>}
+
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10 w-full">
+                            {Object.entries(ROLE_INFO).map(([name, info]) => (
+                                <div key={name} className="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-slate-200 text-center flex flex-col items-center">
+                                    <div className={`${info.bg} ${info.color} w-14 h-14 rounded-full flex items-center justify-center mb-4`}><Icon name={info.icon} size={28} /></div>
+                                    <h3 className="font-black text-lg mb-2">{name}</h3>
+                                    <p className="text-xs text-slate-500 font-bold">{info.desc}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-6 w-full max-w-2xl">
+                            <button onClick={() => { setNotice(''); setView('teacher_setup'); }} className="flex-1 bg-white text-indigo-600 py-6 rounded-[2rem] font-black text-xl shadow-xl hover:bg-indigo-50 border-2 border-indigo-100 flex items-center justify-center gap-3"><Icon name="layout-dashboard"/> 선생님 메뉴</button>
+                            <button onClick={() => { setNotice(''); setView('student_join'); }} className="flex-1 bg-indigo-600 text-white py-6 rounded-[2rem] font-black text-xl shadow-xl hover:bg-indigo-700 flex items-center justify-center gap-3"><Icon name="users"/> 탐정 입장</button>
+                        </div>
+                        {savedTeacher && (
+                            <button onClick={() => openDashboard(savedTeacher)} className="mt-6 text-sm font-bold text-slate-400 hover:text-indigo-600 underline">
+                                {savedTeacher} 수업 대시보드 다시 열기
+                            </button>
+                        )}
+                    </div>
+                );
+            }
+
+            if (view === 'teacher_setup') return <TeacherSetup onCreate={createLesson} onOpen={openDashboard} onBack={() => setView('main')} />;
+            if (view === 'teacher_dash') return <TeacherDashboard lessonCode={lessonCode} onBack={() => setView('main')} />;
+            if (view === 'student_join') return <StudentJoin onJoin={joinGroup} onBack={() => setView('main')} defaultName={loadJSON(SESSION_KEY)?.name || myName} />;
+
+            if (view === 'student_game') {
+                if (!groupData) return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <OfflineBar />
+                        <Icon name="loader" size={48} className="animate-spin text-indigo-400 mb-6" />
+                        <p className="text-xl font-black text-slate-500 mb-6">{notice || '모둠 정보를 불러오는 중...'}</p>
+                        {notice && <button onClick={() => setView('main')} className="text-slate-400 font-bold underline">처음 화면으로</button>}
+                    </div>
+                );
+
+                const cap = groupData.capacity || 4;
+                const seats = normalizeSeats(groupData.seats, cap);
+                const mySeat = seats.findIndex(s => s && s.uid === user.uid);
+
+                // 선생님이 자리를 비웠거나 다른 기기에서 같은 이름으로 들어온 경우
+                if (mySeat === -1) return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <OfflineBar />
+                        <div className="bg-white p-10 rounded-[3rem] shadow-xl max-w-md w-full">
+                            <p className="text-2xl font-black text-slate-700 mb-3">{groupId} 모둠에 내 자리가 없어요</p>
+                            <p className="text-slate-500 font-bold mb-8">다른 기기에서 같은 이름으로 들어왔거나, 선생님이 자리를 정리했을 수 있어요.</p>
+                            <button onClick={() => joinGroup(lessonCode, groupId, myName || loadJSON(SESSION_KEY)?.name)} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-xl mb-3">'{myName}' 이름으로 다시 들어가기</button>
+                            <button onClick={() => { saveJSON(SESSION_KEY, null); setGroupData(null); setGroupId(null); setView('student_join'); }} className="w-full text-slate-400 font-bold py-2">다른 모둠·이름으로 들어가기</button>
+                        </div>
+                    </div>
+                );
+
+                const roles = normalizeRoles(groupData.roleBySeat, cap);
+                const myRole = groupData.stage === STAGES.LOBBY ? null : roles[mySeat];
+                const spectator = !myRole && groupData.stage !== STAGES.LOBBY && groupData.stage !== STAGES.FINISHED;
+                const props = { groupData, lessonCode, groupId, myUid: user.uid };
+
                 return (
                     <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
+                        <OfflineBar />
                         {/* 역할 매뉴얼 사이드바 */}
                         <aside className="w-full md:w-80 bg-white border-r border-slate-200 p-6 shrink-0 order-2 md:order-1">
                             <div className="sticky top-6">
                                 <div className={`${ROLE_INFO[myRole]?.bg || 'bg-slate-100'} p-6 rounded-3xl mb-6 shadow-sm`}>
+                                    <p className="text-sm font-black text-slate-400 mb-2">{myName} 탐정</p>
                                     <div className="flex items-center gap-3 mb-4">
                                         <div className={`${ROLE_INFO[myRole]?.color || 'text-slate-600'}`}><Icon name={ROLE_INFO[myRole]?.icon || 'help-circle'} size={28}/></div>
-                                        <h2 className="font-black text-xl">{myRole || '대기'} 매뉴얼</h2>
+                                        <h2 className="font-black text-xl">{myRole ? `${myRole} 매뉴얼` : '역할 대기 중'}</h2>
                                     </div>
-                                    <p className="text-sm font-bold text-slate-500 mb-6">{ROLE_INFO[myRole]?.desc || '기다려주세요.'}</p>
+                                    <p className="text-sm font-bold text-slate-500 mb-6">{ROLE_INFO[myRole]?.desc || (spectator ? '이번 라운드가 끝나면 역할을 받아요.' : '수사를 시작하면 역할이 정해져요.')}</p>
                                     <ul className="space-y-4">
                                         {ROLE_INFO[myRole]?.manual.map((m, i) => (
                                             <li key={i} className="flex gap-3 text-sm text-slate-700 font-bold items-start">
@@ -198,23 +399,37 @@
                                 </div>
                                 <div className="bg-slate-50 p-5 rounded-2xl border-2 border-slate-100 text-center">
                                     <div className="flex items-center justify-between mb-4">
-                                        <p className="text-lg font-black text-indigo-600">{groupId} 모둠</p>
+                                        <div className="text-left">
+                                            <p className="text-lg font-black text-indigo-600">{groupId} 모둠</p>
+                                            <p className="text-xs font-bold text-slate-400">{groupData.round || 1}라운드</p>
+                                        </div>
                                         <div className="text-right">
                                             <p className="text-xs text-slate-400 font-bold">누적 점수</p>
                                             <p className="text-xl font-black text-amber-500">{groupData.score || 0}점</p>
                                         </div>
                                     </div>
-                                    <button onClick={() => setView('main')} className="w-full py-3 text-sm font-bold text-slate-400 hover:text-rose-500 border-2 border-slate-200 rounded-xl bg-white transition-colors">수업 나가기</button>
+                                    {groupData.stage !== STAGES.LOBBY && (
+                                        <div className="text-left space-y-1 mb-4">
+                                            {seats.map((s, i) => s && (
+                                                <div key={i} className={`flex justify-between text-xs font-bold px-3 py-1.5 rounded-lg ${i === mySeat ? 'bg-indigo-100 text-indigo-700' : 'bg-white text-slate-500'}`}>
+                                                    <span>{s.name}</span><span>{roles[i] || '관전'}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {notice && <p className="text-xs font-bold text-rose-500 mb-3">{notice}</p>}
+                                    <button onClick={leave} className="w-full py-3 text-sm font-bold text-slate-400 hover:text-rose-500 border-2 border-slate-200 rounded-xl bg-white transition-colors">수업 나가기</button>
                                 </div>
                             </div>
                         </aside>
 
                         <main className="flex-1 p-4 md:p-10 order-1 md:order-2 overflow-y-auto">
-                            {groupData.stage === STAGES.LOBBY && <LobbyView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} />}
-                            {groupData.stage === STAGES.DRAWING && (myRole === '그림 대장' ? <LeaderView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} /> : <Waiting text="그림 대장이 비밀 패턴 설계 중..." role="그림 대장" />)}
-                            {groupData.stage === STAGES.SCANNING && (['가로 탐정', '세로 탐정'].includes(myRole) ? <DetectiveView role={myRole} groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} /> : <Waiting text="탐정들이 특징을 분석 중입니다..." role="탐정들" />)}
-                            {groupData.stage === STAGES.GUESSING && (myRole === '정답 대장' ? <AnswererView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} /> : <Waiting text="정답 대장이 수사망을 좁히는 중..." role="정답 대장" />)}
-                            {groupData.stage === STAGES.FINISHED && <ResultView groupData={groupData} lessonCode={lessonCode} groupId={groupId} db={db} />}
+                            {groupData.stage === STAGES.LOBBY && <LobbyView {...props} />}
+                            {spectator && <Waiting text="이번 라운드는 구경하고, 다음 라운드부터 함께해요!" role="관전" />}
+                            {!spectator && groupData.stage === STAGES.DRAWING && (myRole === '그림 대장' ? <LeaderView {...props} /> : <Waiting text="그림 대장이 비밀 패턴 설계 중..." role="그림 대장" />)}
+                            {!spectator && groupData.stage === STAGES.SCANNING && (['가로 탐정', '세로 탐정'].includes(myRole) ? <DetectiveView role={myRole} {...props} /> : <Waiting text="탐정들이 특징을 분석 중입니다..." role="탐정들" />)}
+                            {!spectator && groupData.stage === STAGES.GUESSING && (myRole === '정답 대장' ? <AnswererView {...props} /> : <Waiting text="정답 대장이 수사망을 좁히는 중..." role="정답 대장" />)}
+                            {groupData.stage === STAGES.FINISHED && <ResultView {...props} />}
                         </main>
                     </div>
                 );
@@ -223,18 +438,20 @@
         }
 
         /* --- 교사 서브 컴포넌트 --- */
-        function TeacherSetup({ onCreate, onBack }) {
+        function TeacherSetup({ onCreate, onOpen, onBack }) {
             const [code, setCode] = useState('');
-            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]); 
+            const [openCode, setOpenCode] = useState('');
+            const [groupsConfig, setGroupsConfig] = useState([4, 4, 4, 4]);
             const [loading, setLoading] = useState(false);
-            
+            const validCode = /^[A-Z0-9]{2,12}$/.test(code);
+
             const handleCreate = async () => {
                 setLoading(true);
                 await onCreate(code, groupsConfig);
                 setLoading(false);
             };
 
-            const addGroup = () => setGroupsConfig([...groupsConfig, 4]);
+            const addGroup = () => groupsConfig.length < 15 && setGroupsConfig([...groupsConfig, 4]);
             const removeGroup = () => setGroupsConfig(groupsConfig.slice(0, -1));
             const setCapacity = (index, cap) => {
                 const newConfig = [...groupsConfig];
@@ -243,17 +460,18 @@
             };
 
             return (
-                <div className="h-screen flex items-center justify-center p-6 bg-slate-900">
+                <div className="min-h-screen flex items-center justify-center p-6 bg-slate-900">
                     <div className="bg-white p-8 md:p-10 rounded-[3rem] w-full max-w-lg shadow-2xl text-center">
                         <h2 className="text-3xl font-black mb-8 font-jua">수업 개설하기</h2>
-                        <input type="text" placeholder="수업 코드 (예: AI101)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center mb-6 outline-none focus:border-indigo-500" />
-                        
+                        <input type="text" placeholder="수업 코드 (예: AI101)" value={code} onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12))} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-2xl font-black text-center mb-2 outline-none focus:border-indigo-500" />
+                        <p className="text-xs font-bold text-slate-400 mb-6">영어 대문자·숫자 2~12자</p>
+
                         <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl mb-4">
                             <span className="font-bold text-slate-500 ml-2">총 모둠 수</span>
                             <div className="flex items-center gap-4 mr-2">
                                 <button onClick={removeGroup} disabled={groupsConfig.length <= 1} className="text-2xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm disabled:opacity-30">-</button>
                                 <span className="text-2xl font-black w-8">{groupsConfig.length}</span>
-                                <button onClick={addGroup} className="text-3xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm">+</button>
+                                <button onClick={addGroup} disabled={groupsConfig.length >= 15} className="text-3xl font-black text-indigo-600 bg-white w-10 h-10 rounded-full shadow-sm disabled:opacity-30">+</button>
                             </div>
                         </div>
 
@@ -270,85 +488,174 @@
                                     </div>
                                 ))}
                             </div>
+                            <p className="text-xs font-bold text-slate-400 mt-3">4명 모둠에 3명만 오면 3인 방식(문제 자동 출제)으로 진행돼요.</p>
                         </div>
 
-                        <button onClick={handleCreate} disabled={!code || loading} className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-lg active:scale-95 disabled:opacity-50 mb-2">
+                        <button onClick={handleCreate} disabled={!validCode || loading} className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-lg active:scale-95 disabled:opacity-50 mb-6">
                             {loading ? '생성 중...' : '수업 시작하기'}
                         </button>
+
+                        <div className="border-t-2 border-slate-100 pt-6 mb-2">
+                            <p className="text-sm font-bold text-slate-500 mb-3">이미 만든 수업의 대시보드 열기</p>
+                            <div className="flex gap-2">
+                                <input type="text" placeholder="수업 코드" value={openCode} onChange={e => setOpenCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12))} className="flex-1 min-w-0 p-3 border-2 border-slate-100 rounded-xl font-black text-center outline-none focus:border-indigo-500" />
+                                <button onClick={() => openCode && onOpen(openCode)} className="bg-slate-800 text-white px-5 rounded-xl font-bold">열기</button>
+                            </div>
+                        </div>
                         <button onClick={onBack} className="w-full text-slate-400 font-bold py-3 hover:text-slate-600">취소</button>
                     </div>
                 </div>
             );
         }
 
-        function TeacherDashboard({ lessonCode, db, onBack }) {
+        function TeacherDashboard({ lessonCode, onBack }) {
             const [groups, setGroups] = useState([]);
+            const [error, setError] = useState('');
             useEffect(() => {
-                const unsubscribe = onSnapshot(collection(db, 'lessons', lessonCode, 'groups'), (snap) => {
-                    setGroups(snap.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
-                });
+                const unsubscribe = onSnapshot(collection(db, 'lessons', lessonCode, 'groups'),
+                    (snap) => { setGroups(sortGroups(snap.docs.map(d => d.data()))); setError(''); },
+                    (err) => { console.error(err); setError(errMsg(err)); }
+                );
                 return () => unsubscribe();
-            }, []);
+            }, [lessonCode]);
+
+            const removeSeat = async (g, seatIdx) => {
+                const name = normalizeSeats(g.seats, g.capacity || 4)[seatIdx]?.name;
+                const midGame = g.stage !== STAGES.LOBBY && g.stage !== STAGES.FINISHED;
+                if (!confirm(`${g.id} 모둠에서 '${name}' 자리를 비울까요?` + (midGame ? '\n게임 중이라 이 모둠은 대기실로 돌아갑니다.' : ''))) return;
+                try {
+                    await runTransaction(db, async (tx) => {
+                        const ref = groupRef(lessonCode, g.id);
+                        const d = (await tx.get(ref)).data();
+                        const cap = d.capacity || 4;
+                        const seats = normalizeSeats(d.seats, cap);
+                        seats[seatIdx] = null;
+                        const stillMid = d.stage !== STAGES.LOBBY && d.stage !== STAGES.FINISHED;
+                        tx.update(ref, stillMid ? { seats, stage: STAGES.LOBBY, ...freshBoard(cap) } : { seats });
+                    });
+                } catch (e) { alert(errMsg(e)); }
+            };
+
+            const resetGroup = async (g) => {
+                if (!confirm(`${g.id} 모둠을 대기실로 되돌릴까요? (점수는 그대로)`)) return;
+                try { await updateDoc(groupRef(lessonCode, g.id), { stage: STAGES.LOBBY, ...freshBoard(g.capacity || 4) }); }
+                catch (e) { alert(errMsg(e)); }
+            };
+
             return (
                 <div className="min-h-screen bg-slate-100 p-8">
-                    <header className="flex justify-between items-center mb-10 max-w-6xl mx-auto">
+                    <header className="flex flex-wrap gap-4 justify-between items-center mb-10 max-w-6xl mx-auto">
                         <h1 className="text-3xl font-black flex items-center gap-3 font-jua"><Icon name="layout-dashboard" className="text-indigo-600"/> 대시보드: {lessonCode}</h1>
                         <button onClick={onBack} className="bg-slate-800 text-white px-6 py-2 rounded-xl font-bold shadow-md">나가기</button>
                     </header>
+                    {error && <p className="max-w-6xl mx-auto mb-6 bg-rose-50 text-rose-600 font-bold p-4 rounded-2xl">{error}</p>}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
-                        {groups.map(g => (
-                            <div key={g.id} className="bg-white p-6 rounded-[2rem] shadow-sm border-b-4 border-indigo-200 relative overflow-hidden">
-                                <div className="absolute top-0 right-0 bg-amber-400 text-white px-4 py-1 font-black text-sm rounded-bl-xl shadow-sm">{g.score || 0}점</div>
-                                <div className="flex justify-between items-center font-black mb-4 pt-2">
-                                    <span className="text-xl">{g.id} 모둠</span>
-                                    <span className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full">R{g.round}</span>
+                        {groups.map(g => {
+                            const cap = g.capacity || 4;
+                            const seats = normalizeSeats(g.seats, cap);
+                            const roles = normalizeRoles(g.roleBySeat, cap);
+                            const count = seats.filter(Boolean).length;
+                            return (
+                                <div key={g.id} className="bg-white p-6 rounded-[2rem] shadow-sm border-b-4 border-indigo-200 relative overflow-hidden">
+                                    <div className="absolute top-0 right-0 bg-amber-400 text-white px-4 py-1 font-black text-sm rounded-bl-xl shadow-sm">{g.score || 0}점</div>
+                                    <div className="flex justify-between items-center font-black mb-4 pt-2">
+                                        <span className="text-xl">{g.id} 모둠</span>
+                                        <span className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full">R{g.round}</span>
+                                    </div>
+                                    <div className="text-xs font-black text-slate-400 mb-3 flex justify-between items-center">
+                                        <span>{STAGE_LABEL[g.stage] || g.stage}</span>
+                                        <span className="text-indigo-500">{count}/{cap} 명</span>
+                                    </div>
+                                    <div className="space-y-1 mb-4">
+                                        {seats.map((s, i) => (
+                                            <div key={i} className="flex items-center justify-between text-xs font-bold bg-slate-50 rounded-lg px-3 py-1.5">
+                                                <span className={s ? 'text-slate-700' : 'text-slate-300'}>{s ? s.name : '빈자리'}</span>
+                                                <span className="flex items-center gap-2">
+                                                    {s && g.stage !== STAGES.LOBBY && <span className="text-indigo-500">{roles[i] || '관전'}</span>}
+                                                    {s && <button onClick={() => removeSeat(g, i)} title="자리 비우기" className="text-slate-300 hover:text-rose-500"><Icon name="x" size={14} /></button>}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="grid grid-cols-5 gap-1 w-fit mx-auto bg-slate-50 p-3 rounded-xl border border-slate-100 mb-4">
+                                        {(g.imageData || []).map((v, i) => <div key={i} className={`w-4 h-4 rounded-sm ${v === 1 ? 'bg-slate-800 shadow-sm' : 'bg-white border'}`} />)}
+                                    </div>
+                                    {g.stage !== STAGES.LOBBY && (
+                                        <button onClick={() => resetGroup(g)} className="w-full text-xs font-bold text-slate-400 hover:text-indigo-600 border border-slate-200 rounded-lg py-2 flex items-center justify-center gap-1"><Icon name="rotate-ccw" size={14} /> 대기실로 되돌리기</button>
+                                    )}
                                 </div>
-                                <div className="text-xs font-black text-slate-400 mb-3 tracking-widest flex justify-between items-center">
-                                    <span className="uppercase">{g.stage}</span>
-                                    <span className="text-indigo-500">{Object.keys(g.members || {}).length}/{g.capacity || 4} 명</span>
-                                </div>
-                                <div className="grid grid-cols-5 gap-1 w-fit mx-auto bg-slate-50 p-3 rounded-xl border border-slate-100">
-                                    {g.imageData?.map((v, i) => <div key={i} className={`w-4 h-4 rounded-sm ${v === 1 ? 'bg-slate-800 shadow-sm' : 'bg-white border'}`} />)}
-                                </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             );
         }
 
-        function StudentJoin({ onJoin, onBack, db }) {
+        function StudentJoin({ onJoin, onBack, defaultName }) {
             const [code, setCode] = useState('');
+            const [name, setName] = useState(defaultName || '');
             const [step, setStep] = useState(1);
             const [available, setAvailable] = useState([]);
+            const [busy, setBusy] = useState(false);
+
+            useEffect(() => {
+                if (step !== 2) return;
+                const unsubscribe = onSnapshot(collection(db, 'lessons', code, 'groups'),
+                    (snap) => setAvailable(sortGroups(snap.docs.map(d => d.data()))),
+                    (err) => console.error(err));
+                return () => unsubscribe();
+            }, [step, code]);
+
             const check = async () => {
-                const s = await getDoc(doc(db, 'lessons', code));
-                if (s.exists()) {
-                    const g = await getDocs(collection(db, 'lessons', code, 'groups'));
-                    setAvailable(g.docs.map(d => d.data()).sort((a,b) => a.id.localeCompare(b.id)));
-                    setStep(2);
-                } else alert("코드를 확인해 주세요.");
+                if (!code) return alert("수업 코드를 입력해 주세요.");
+                if (!cleanName(name)) return alert("이름을 입력해 주세요.");
+                setBusy(true);
+                try {
+                    const s = await getDoc(doc(db, 'lessons', code));
+                    if (s.exists()) setStep(2);
+                    else alert("코드를 확인해 주세요.");
+                } catch (e) { alert(errMsg(e)); }
+                setBusy(false);
             };
+
+            const pick = async (gId) => {
+                if (busy) return;
+                setBusy(true);
+                await onJoin(code, gId, name);
+                setBusy(false);
+            };
+
             return (
-                <div className="h-screen flex items-center justify-center p-6 bg-indigo-600">
+                <div className="min-h-screen flex items-center justify-center p-6 bg-indigo-600">
                     <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
                         {step === 1 ? (
                             <div className="text-center">
                                 <h2 className="text-3xl font-black mb-8 text-indigo-600 font-jua">수업 참여</h2>
-                                <input type="text" placeholder="선생님이 알려준 코드" value={code} onChange={e => setCode(e.target.value.toUpperCase())} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-xl font-black text-center mb-6 outline-none focus:border-indigo-600" />
-                                <button onClick={check} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-indigo-700 active:scale-95 transition-all mb-4">모둠 찾기</button>
+                                <input type="text" placeholder="선생님이 알려준 코드" value={code} onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12))} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-xl font-black text-center mb-4 outline-none focus:border-indigo-600" />
+                                <input type="text" placeholder="내 이름" value={name} maxLength={12} onChange={e => setName(e.target.value)} className="w-full p-5 border-4 border-slate-50 rounded-2xl text-xl font-black text-center mb-2 outline-none focus:border-indigo-600" />
+                                <p className="text-xs font-bold text-slate-400 mb-6">튕겨서 다시 들어올 때도 같은 이름을 쓰면 원래 자리로 돌아가요.</p>
+                                <button onClick={check} disabled={busy} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-xl shadow-lg hover:bg-indigo-700 active:scale-95 transition-all mb-4 disabled:opacity-50">모둠 찾기</button>
                                 <button onClick={onBack} className="text-slate-400 font-bold">취소</button>
                             </div>
                         ) : (
                             <div>
-                                <h2 className="text-2xl font-black mb-6 text-center font-jua">우리 모둠 선택</h2>
-                                <div className="grid grid-cols-2 gap-3 mb-6 max-h-[400px] overflow-y-auto">
-                                    {available.map(g => (
-                                        <button key={g.id} onClick={() => onJoin(code, g.id)} className="bg-slate-50 p-5 rounded-2xl hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-600 transition-all font-bold flex flex-col items-center gap-2">
-                                            <span className="text-xl font-black text-slate-800">{g.id} 모둠</span>
-                                            <span className="text-xs text-indigo-500 font-black bg-indigo-100 px-3 py-1 rounded-full">{Object.keys(g.members || {}).length}/{g.capacity || 4} 명</span>
-                                        </button>
-                                    ))}
+                                <h2 className="text-2xl font-black mb-2 text-center font-jua">우리 모둠 선택</h2>
+                                <p className="text-center text-sm font-bold text-slate-400 mb-6">{cleanName(name)} 탐정</p>
+                                <div className="grid grid-cols-2 gap-3 mb-6 max-h-[420px] overflow-y-auto">
+                                    {available.map(g => {
+                                        const cap = g.capacity || 4;
+                                        const seats = normalizeSeats(g.seats, cap);
+                                        const count = seats.filter(Boolean).length;
+                                        const mine = seats.some(s => s && sameName(s.name, name));
+                                        return (
+                                            <button key={g.id} disabled={busy} onClick={() => pick(g.id)} className={`p-4 rounded-2xl border-2 transition-all font-bold flex flex-col items-center gap-2 ${mine ? 'bg-indigo-50 border-indigo-500' : 'bg-slate-50 border-transparent hover:bg-indigo-50 hover:border-indigo-600'}`}>
+                                                <span className="text-xl font-black text-slate-800">{g.id} 모둠</span>
+                                                <span className="text-xs text-indigo-500 font-black bg-indigo-100 px-3 py-1 rounded-full">{count}/{cap} 명</span>
+                                                <span className="text-[11px] text-slate-400 leading-tight">{seats.filter(Boolean).map(s => s.name).join(', ') || '아직 아무도 없어요'}</span>
+                                                {mine && <span className="text-[11px] font-black text-indigo-600">내 자리 있음</span>}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                                 <button onClick={() => setStep(1)} className="text-slate-400 font-bold w-full text-center hover:text-slate-600">뒤로 가기</button>
                             </div>
@@ -359,82 +666,110 @@
         }
 
         /* --- 게임 서브 컴포넌트 --- */
-        function LobbyView({ groupData, lessonCode, groupId, db }) {
+        function LobbyView({ groupData, lessonCode, groupId, myUid }) {
             const capacity = groupData.capacity || 4;
+            const seats = normalizeSeats(groupData.seats, capacity);
+            const count = seats.filter(Boolean).length;
+            const [busy, setBusy] = useState(false);
+
+            // 역할은 시작 버튼을 누르는 순간 한 번만, 트랜잭션으로 정한다 → 역할 겹침·정답 대장 없음 방지
+            // 라운드마다 한 칸씩 돌아가므로 모두가 모든 역할을 맡아 볼 수 있다
             const start = async () => {
-                const gRef = doc(db, 'lessons', lessonCode, 'groups', groupId);
-                if (capacity === 3) {
-                    const p = EASY_PATTERNS[Math.floor(Math.random()*EASY_PATTERNS.length)];
-                    await updateDoc(gRef, { stage: STAGES.SCANNING, imageData: p.data, category: p.category, intendedAnswer: p.name, horizDone: false, vertDone: false });
-                } else {
-                    await updateDoc(gRef, { stage: STAGES.DRAWING, imageData: Array(25).fill(0), category: '', intendedAnswer: '', horizDone: false, vertDone: false });
-                }
+                if (busy) return;
+                setBusy(true);
+                try {
+                    await runTransaction(db, async (tx) => {
+                        const ref = groupRef(lessonCode, groupId);
+                        const d = (await tx.get(ref)).data();
+                        if (d.stage !== STAGES.LOBBY) return; // 다른 모둠원이 먼저 눌렀음
+                        const cap = d.capacity || 4;
+                        const s = normalizeSeats(d.seats, cap);
+                        const occupied = s.map((x, i) => x ? i : -1).filter(i => i >= 0);
+                        if (occupied.length < MIN_PLAYERS) throw new Error('NEED_PLAYERS');
+                        const roleSet = occupied.length >= 4 ? ROLES4 : ROLES3;
+                        const shift = ((d.round || 1) - 1) % roleSet.length;
+                        const roleBySeat = Array(cap).fill(null);
+                        occupied.forEach((seatIdx, k) => { if (k < roleSet.length) roleBySeat[seatIdx] = roleSet[(k + shift) % roleSet.length]; });
+                        const base = { ...freshBoard(cap), roleBySeat };
+                        if (roleSet === ROLES3) {
+                            const p = EASY_PATTERNS[Math.floor(Math.random() * EASY_PATTERNS.length)];
+                            tx.update(ref, { ...base, stage: STAGES.SCANNING, imageData: p.data, category: p.category, intendedAnswer: p.name });
+                        } else {
+                            tx.update(ref, { ...base, stage: STAGES.DRAWING });
+                        }
+                    });
+                } catch (e) { alert(errMsg(e)); }
+                setBusy(false);
             };
+
             return (
-                <div className="bg-white p-12 rounded-[3rem] shadow-sm text-center h-full flex flex-col justify-center">
+                <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-sm text-center h-full flex flex-col justify-center">
                     <h2 className="text-4xl font-black mb-12 font-jua text-slate-700">모둠원 대기실</h2>
-                    <div className="flex flex-wrap justify-center gap-6 mb-16">
-                        {Object.values(groupData.members || {}).map((_, i) => (
-                            <div key={i} className="flex flex-col items-center animate-pulse">
-                                <div className="w-24 h-24 bg-indigo-100 rounded-[2rem] flex items-center justify-center text-indigo-600 mb-3 border-b-4 border-indigo-200"><Icon name="user" size={40} /></div>
-                                <span className="text-sm font-black text-indigo-500">탐정 {i+1}</span>
+                    <div className="flex flex-wrap justify-center gap-6 mb-10">
+                        {seats.map((s, i) => s ? (
+                            <div key={i} className="flex flex-col items-center">
+                                <div className={`w-24 h-24 rounded-[2rem] flex items-center justify-center mb-3 border-b-4 ${s.uid === myUid ? 'bg-indigo-600 text-white border-indigo-800' : 'bg-indigo-100 text-indigo-600 border-indigo-200'}`}><Icon name="user" size={40} /></div>
+                                <span className="text-sm font-black text-indigo-500">{s.name}{s.uid === myUid ? ' (나)' : ''}</span>
+                            </div>
+                        ) : (
+                            <div key={i} className="flex flex-col items-center">
+                                <div className="w-24 h-24 bg-slate-50 border-4 border-dashed border-slate-200 rounded-[2rem] flex items-center justify-center text-slate-300 mb-3"><Icon name="user-plus" size={32} /></div>
+                                <span className="text-sm font-bold text-slate-300">빈자리</span>
                             </div>
                         ))}
-                        {Array(Math.max(0, capacity - Object.keys(groupData.members || {}).length)).fill(0).map((_, i) => (
-                            <div key={i} className="w-24 h-24 bg-slate-50 border-4 border-dashed border-slate-200 rounded-[2rem] flex items-center justify-center text-slate-300"><Icon name="user-plus" size={32} /></div>
-                        ))}
                     </div>
-                    <button onClick={start} className="bg-indigo-600 text-white px-16 py-6 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-xl transition-all active:scale-95 inline-block mx-auto">수사 시작하기!</button>
+                    <p className="font-bold text-slate-400 mb-6">
+                        {count < MIN_PLAYERS ? `${MIN_PLAYERS}명 이상 모이면 시작할 수 있어요.`
+                            : count >= 4 ? '4명 방식: 그림 대장이 문제를 내요. 역할은 라운드마다 돌아가요.'
+                            : '3명 방식: 문제가 자동으로 나와요. 역할은 라운드마다 돌아가요.'}
+                    </p>
+                    <button onClick={start} disabled={busy || count < MIN_PLAYERS} className="bg-indigo-600 text-white px-16 py-6 rounded-[2rem] font-black text-2xl hover:bg-indigo-700 shadow-xl transition-all active:scale-95 inline-block mx-auto disabled:opacity-40 disabled:cursor-not-allowed">{busy ? '역할 정하는 중...' : '수사 시작하기!'}</button>
                 </div>
             );
         }
 
-        // --- 그림 대장 뷰: 카테고리 & 모양 선택 UI 추가 ---
-        function LeaderView({ groupData, lessonCode, groupId, db }) {
-            const [category, setCategory] = useState('');
-            const [answer, setAnswer] = useState('');
+        // --- 그림 대장 뷰: 고른 종류·모양을 서버에 저장해 다시 들어와도 그대로 남음 ---
+        function LeaderView({ groupData, lessonCode, groupId }) {
+            const category = groupData.category || '';
+            const answer = groupData.intendedAnswer || '';
+            const ref = groupRef(lessonCode, groupId);
+            const safe = (p) => p.catch(e => { console.error(e); alert(errMsg(e)); });
 
-            // 선택 가능한 쉬운 패턴 목록 (보기 대폭 추가)
             const PATTERN_OPTIONS = {
                 '한글': ['ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅌ', 'ㅍ', 'ㅏ', 'ㅓ', 'ㅗ', 'ㅜ'],
                 '알파벳': ['A', 'C', 'E', 'F', 'H', 'I', 'L', 'O', 'P', 'T', 'U', 'Y'],
                 '숫자': ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
             };
 
-            const toggle = async (i) => {
+            const toggle = (i) => {
                 if (!answer) return alert("먼저 그릴 모양을 위에서 선택해주세요!");
-                const newData = [...groupData.imageData]; 
+                const newData = [...groupData.imageData];
                 newData[i] = newData[i] === 0 ? 1 : 0;
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { imageData: newData });
+                safe(updateDoc(ref, { imageData: newData }));
             };
 
             const submit = async () => {
                 if (!category || !answer) return alert("카테고리와 그릴 모양을 모두 선택해야 출제할 수 있습니다.");
-                
                 const drawnCount = groupData.imageData.filter(v => v === 1).length;
                 if (drawnCount < 3) return alert("그림을 너무 적게 그렸어요! 특징이 나타나게 조금 더 그려주세요.");
-
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
-                    stage: STAGES.SCANNING, 
-                    category: category,
-                    intendedAnswer: answer,
-                    horizDone: false,
-                    vertDone: false
-                });
+                await safe(runTransaction(db, async (tx) => {
+                    const d = (await tx.get(ref)).data();
+                    if (d.stage !== STAGES.DRAWING) return;
+                    tx.update(ref, { stage: STAGES.SCANNING, horizDone: false, vertDone: false, horizScores: Array(9).fill(0), vertScores: Array(9).fill(0) });
+                }));
             };
 
             return (
                 <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-sm text-center flex flex-col justify-center">
                     <h2 className="text-3xl font-black mb-2 font-jua text-blue-600">비밀 패턴 설계하기</h2>
                     <p className="text-slate-500 font-bold mb-6 text-sm">탐정들이 맞히기 쉽게 제시된 보기 중 하나를 골라 그려주세요!</p>
-                    
-                    {/* 카테고리 및 글자 선택 영역 */}
+
                     <div className="bg-slate-50 p-6 rounded-[2rem] border-2 border-slate-100 mb-8 max-w-lg mx-auto w-full">
                         <div className="mb-4">
                             <p className="text-sm font-black text-slate-400 mb-3 uppercase">1. 어떤 종류를 그릴까요?</p>
                             <div className="flex flex-wrap gap-2 justify-center">
                                 {Object.keys(PATTERN_OPTIONS).map(c => (
-                                    <button key={c} onClick={() => {setCategory(c); setAnswer('');}} 
+                                    <button key={c} onClick={() => safe(updateDoc(ref, { category: c, intendedAnswer: '' }))}
                                         className={`px-5 py-2 rounded-xl font-black transition-all ${category === c ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-slate-400 border border-slate-200 hover:border-blue-300'}`}>
                                         {c}
                                     </button>
@@ -442,12 +777,12 @@
                             </div>
                         </div>
 
-                        {category && (
+                        {PATTERN_OPTIONS[category] && (
                             <div className="mt-6 pt-6 border-t-2 border-slate-200 transition-all duration-300">
                                 <p className="text-sm font-black text-slate-400 mb-3 uppercase">2. 그릴 모양 선택</p>
                                 <div className="flex flex-wrap gap-2 justify-center">
                                     {PATTERN_OPTIONS[category].map(char => (
-                                        <button key={char} onClick={() => setAnswer(char)} 
+                                        <button key={char} onClick={() => safe(updateDoc(ref, { intendedAnswer: char }))}
                                             className={`w-12 h-12 rounded-xl font-black text-2xl transition-all ${answer === char ? 'bg-amber-400 text-white shadow-md scale-110' : 'bg-white text-slate-500 border border-slate-200 hover:border-amber-300 hover:bg-amber-50'}`}>
                                             {char}
                                         </button>
@@ -458,7 +793,6 @@
                         )}
                     </div>
 
-                    {/* 그림 그리기 영역 */}
                     <div className={`transition-opacity duration-500 ${answer ? 'opacity-100' : 'opacity-40'}`}>
                         <p className="font-black text-blue-600 mb-4">{answer ? `선택한 '${answer}' 모양을 아래 격자에 예쁘게 그려주세요!` : '먼저 모양을 선택해야 그릴 수 있어요.'}</p>
                         <div className="grid grid-cols-5 gap-3 p-6 bg-slate-50 rounded-[3rem] inline-grid mb-10 border-4 border-slate-100 shadow-inner mx-auto">
@@ -474,45 +808,60 @@
             );
         }
 
-        function DetectiveView({ role, groupData, lessonCode, groupId, db }) {
+        function DetectiveView({ role, groupData, lessonCode, groupId }) {
             const [pos, setPos] = useState({ x: 0, y: 0 });
+            const cell = useCellSize();
+            const GAP = 8, PAD = 20, BORDER = 5;
             const isH = role === '가로 탐정';
             const f = isH ? FILTERS.horizontal : FILTERS.vertical;
             const field = isH ? 'horizScores' : 'vertScores';
             const colorClass = isH ? 'emerald' : 'rose';
             const isDone = isH ? groupData.horizDone : groupData.vertDone;
+            const ref = groupRef(lessonCode, groupId);
 
             const scan = async () => {
                 if (isDone) return;
                 let s = 0;
-                for (let r=0; r<3; r++) for (let c=0; c<3; c++) {
-                    const idx = (pos.y + r)*5 + (pos.x + c);
+                for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+                    const idx = (pos.y + r) * 5 + (pos.x + c);
                     if (groupData.imageData[idx] === 1 && f[r][c] === 1) s++;
                 }
-                const newS = [...groupData[field]]; newS[pos.y*3+pos.x] = s;
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { [field]: newS });
+                const newS = [...groupData[field]]; newS[pos.y * 3 + pos.x] = s;
+                try { await updateDoc(ref, { [field]: newS }); } catch (e) { alert(errMsg(e)); }
             };
 
+            // 두 탐정이 동시에 눌러도 다음 단계로 확실히 넘어가도록 트랜잭션 처리
             const finalize = async () => {
-                const updates = isH ? { horizDone: true } : { vertDone: true };
-                const otherDone = isH ? groupData.vertDone : groupData.horizDone;
-                if (otherDone) updates.stage = STAGES.GUESSING;
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), updates);
+                try {
+                    await runTransaction(db, async (tx) => {
+                        const d = (await tx.get(ref)).data();
+                        if (d.stage !== STAGES.SCANNING) return;
+                        const updates = isH ? { horizDone: true } : { vertDone: true };
+                        const otherDone = isH ? d.vertDone : d.horizDone;
+                        if (otherDone) updates.stage = STAGES.GUESSING;
+                        tx.update(ref, updates);
+                    });
+                } catch (e) { alert(errMsg(e)); }
             };
+
+            const move = (dx, dy) => !isDone && setPos(p => ({ x: Math.min(2, Math.max(0, p.x + dx)), y: Math.min(2, Math.max(0, p.y + dy)) }));
+            const btn = `bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`;
+            const boxSize = cell * 3 + GAP * 2 + BORDER * 2;
 
             return (
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                    <div className="bg-white p-8 md:p-10 rounded-[3rem] shadow-sm flex flex-col items-center">
+                    <div className="bg-white p-6 md:p-10 rounded-[3rem] shadow-sm flex flex-col items-center">
                         <h3 className={`font-black mb-8 text-2xl flex items-center gap-2 text-${colorClass}-600`}><Icon name="search" size={28} /> 특징 돋보기 (CNN 필터)</h3>
-                        
-                        <div className="relative inline-block bg-slate-100 p-5 rounded-[2.5rem] mb-10 border-8 border-slate-50 shadow-inner">
-                            <div className="grid grid-cols-5 gap-2">
-                                {groupData.imageData.map((v, i) => <div key={i} className={`w-12 h-12 md:w-16 md:h-16 border rounded-xl flex items-center justify-center font-black text-xl shadow-sm ${v === 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-100'}`}>{v}</div>)}
+
+                        <div className="relative inline-block bg-slate-100 rounded-[2.5rem] mb-10 border-8 border-slate-50 shadow-inner" style={{ padding: PAD }}>
+                            <div className="grid grid-cols-5" style={{ gap: GAP }}>
+                                {groupData.imageData.map((v, i) => <div key={i} style={{ width: cell, height: cell }} className={`border rounded-xl flex items-center justify-center font-black text-xl shadow-sm ${v === 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-100'}`}>{v}</div>)}
                             </div>
-                            <div className={`absolute border-[6px] border-${colorClass}-500 pointer-events-none transition-all duration-300 rounded-[1.5rem] flex flex-wrap p-1 shadow-2xl bg-white/20`} style={{ width: (16*4+8)*3+8, height: (16*4+8)*3+8, left: 20+pos.x*(16*4+8), top: 20+pos.y*(16*4+8) }}>
+                            <div className={`absolute border-${colorClass}-500 pointer-events-none transition-all duration-300 rounded-[1.2rem] shadow-2xl bg-white/20 grid grid-cols-3`}
+                                 style={{ borderWidth: BORDER, width: boxSize, height: boxSize, left: PAD - BORDER + pos.x * (cell + GAP), top: PAD - BORDER + pos.y * (cell + GAP), gap: GAP, boxSizing: 'border-box' }}>
                                 {f.flat().map((fv, fi) => (
-                                    <div key={fi} className={`w-12 h-12 md:w-16 md:h-16 flex items-center justify-center rounded-lg ${fv === 1 ? `bg-${colorClass}-500/60 text-white` : 'border border-transparent'}`}>
-                                        {fv === 1 && <Icon name="check" size={24} className="font-black drop-shadow-md" />}
+                                    <div key={fi} style={{ width: cell, height: cell }} className={`flex items-center justify-center rounded-lg ${fv === 1 ? `bg-${colorClass}-500/60 text-white` : ''}`}>
+                                        {fv === 1 && <Icon name="check" size={24} className="drop-shadow-md" />}
                                     </div>
                                 ))}
                             </div>
@@ -520,11 +869,11 @@
 
                         <div className="bg-slate-50 p-6 rounded-3xl w-full max-w-sm">
                             <div className="grid grid-cols-3 gap-3 w-48 mx-auto">
-                                <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.max(0,p.y-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-up"/></button><div/>
-                                <button onClick={() => !isDone && setPos(p => ({...p, x:Math.max(0,p.x-1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-left"/></button>
+                                <div/><button onClick={() => move(0, -1)} disabled={isDone} className={btn}><Icon name="chevron-up"/></button><div/>
+                                <button onClick={() => move(-1, 0)} disabled={isDone} className={btn}><Icon name="chevron-left"/></button>
                                 <button onClick={scan} disabled={isDone} className={`bg-${colorClass}-600 border-b-4 border-${colorClass}-800 text-white font-black text-lg rounded-2xl transition-all flex items-center justify-center shadow-lg ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}>SCAN</button>
-                                <button onClick={() => !isDone && setPos(p => ({...p, x:Math.min(2,p.x+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-right"/></button>
-                                <div/><button onClick={() => !isDone && setPos(p => ({...p, y:Math.min(2,p.y+1)}))} disabled={isDone} className={`bg-white border-b-4 border-slate-200 p-4 rounded-2xl font-black text-slate-600 hover:bg-slate-100 transition-all flex justify-center ${isDone ? 'opacity-50 cursor-not-allowed border-b-0 translate-y-1' : 'active:translate-y-1 active:border-b-0'}`}><Icon name="chevron-down"/></button><div/>
+                                <button onClick={() => move(1, 0)} disabled={isDone} className={btn}><Icon name="chevron-right"/></button>
+                                <div/><button onClick={() => move(0, 1)} disabled={isDone} className={btn}><Icon name="chevron-down"/></button><div/>
                             </div>
                         </div>
                     </div>
@@ -552,21 +901,24 @@
         }
 
         // --- 정답 대장 뷰: 1글자 입력 제한 ---
-        function AnswererView({ groupData, lessonCode, groupId, db }) {
+        function AnswererView({ groupData, lessonCode, groupId }) {
             const [g, setG] = useState('');
-            
+            const [busy, setBusy] = useState(false);
+
             const submit = async () => {
-                if(!g.trim()) return alert("최종 정답을 1글자로 입력해주세요!");
-                
-                const isCorrect = g.trim().toLowerCase() === (groupData.intendedAnswer || "").trim().toLowerCase();
-                const newScore = (groupData.score || 0) + (isCorrect ? 10 : 0); 
-                
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), { 
-                    stage: STAGES.FINISHED, 
-                    finalGuess: g.trim(),
-                    score: newScore,
-                    isCorrect: isCorrect
-                });
+                if (!g.trim()) return alert("최종 정답을 1글자로 입력해주세요!");
+                if (busy) return;
+                setBusy(true);
+                try {
+                    const ref = groupRef(lessonCode, groupId);
+                    await runTransaction(db, async (tx) => {
+                        const d = (await tx.get(ref)).data();
+                        if (d.stage !== STAGES.GUESSING) return; // 이미 발표함 → 점수 두 번 안 올라감
+                        const isCorrect = g.trim().toLowerCase() === (d.intendedAnswer || "").trim().toLowerCase();
+                        tx.update(ref, { stage: STAGES.FINISHED, finalGuess: g.trim(), score: (d.score || 0) + (isCorrect ? 10 : 0), isCorrect });
+                    });
+                } catch (e) { alert(errMsg(e)); }
+                setBusy(false);
             };
 
             return (
@@ -581,53 +933,49 @@
                             <div className="grid grid-cols-3 gap-3 bg-slate-50 p-6 rounded-[2.5rem]"> {groupData.vertScores.map((s,i)=><div key={i} className={`w-16 h-16 flex items-center justify-center rounded-2xl font-black text-3xl transition-all ${s>0?'bg-rose-500 text-white shadow-lg':'bg-white border-2 border-slate-200 text-slate-200'}`}>{s}</div>)} </div>
                         </div>
                     </div>
-                    <div className="bg-white p-12 rounded-[4rem] shadow-2xl border-4 border-amber-400 text-center relative overflow-hidden">
+                    <div className="bg-white p-8 md:p-12 rounded-[4rem] shadow-2xl border-4 border-amber-400 text-center relative overflow-hidden">
                         <div className="absolute -top-10 -right-10 text-amber-100 opacity-50"><Icon name="brain-circuit" size={200}/></div>
-                        
+
                         <div className="inline-block bg-amber-100 text-amber-600 font-black px-6 py-2 rounded-full mb-6 relative z-10 text-lg border border-amber-300">
                             💡 그림 대장의 카테고리 힌트 : {groupData.category}
                         </div>
-                        
+
                         <h3 className="text-4xl font-black mb-4 font-jua text-amber-600 relative z-10">🕵️ 범인(모양) 검거하기</h3>
                         <p className="font-bold text-slate-500 mb-8 relative z-10">어떤 모양인지 <span className="text-rose-500">단 한 글자</span>로 정확히 입력하세요! (예: ㄱ, L, 7)</p>
                         <div className="max-w-lg mx-auto relative z-10 flex gap-4">
-                            {/* maxLength=1 설정으로 한 글자만 입력 가능 */}
-                            <input type="text" value={g} onChange={e=>setG(e.target.value)} maxLength="1" className="flex-1 p-6 border-4 border-slate-100 rounded-3xl text-center text-4xl font-black outline-none focus:border-amber-400 shadow-inner uppercase" placeholder="정답 1글자 입력" />
-                            <button onClick={submit} className="bg-amber-500 text-white px-10 rounded-3xl font-black text-2xl shadow-xl hover:bg-amber-600 transition-colors">발표!</button>
+                            <input type="text" value={g} onChange={e=>setG(e.target.value)} maxLength="1" className="flex-1 min-w-0 p-6 border-4 border-slate-100 rounded-3xl text-center text-4xl font-black outline-none focus:border-amber-400 shadow-inner uppercase" placeholder="1글자" />
+                            <button onClick={submit} disabled={busy} className="bg-amber-500 text-white px-10 rounded-3xl font-black text-2xl shadow-xl hover:bg-amber-600 transition-colors disabled:opacity-50">발표!</button>
                         </div>
                     </div>
                 </div>
             );
         }
 
-        function ResultView({ groupData, lessonCode, groupId, db }) {
+        function ResultView({ groupData, lessonCode, groupId }) {
+            const [busy, setBusy] = useState(false);
+            // 여러 명이 동시에 눌러도 라운드가 한 번만 넘어가도록 트랜잭션 처리
             const next = async () => {
-                const capacity = groupData.capacity || 4;
-                const memberUids = Object.keys(groupData.members);
-                
-                let indices = Array.from({length: capacity}, (_, i) => i);
-                indices.sort(() => Math.random() - 0.5); 
-                
-                const newMembers = { ...groupData.members };
-                memberUids.forEach((uid, i) => {
-                    newMembers[uid].baseIndex = indices[i];
-                });
-
-                await updateDoc(doc(db, 'lessons', lessonCode, 'groups', groupId), {
-                    round: groupData.round + 1, stage: STAGES.LOBBY, finalGuess: '', intendedAnswer: '', category: '',
-                    imageData: Array(25).fill(0), horizScores: Array(9).fill(0), vertScores: Array(9).fill(0),
-                    members: newMembers, isCorrect: null, horizDone: false, vertDone: false
-                });
+                if (busy) return;
+                setBusy(true);
+                try {
+                    const ref = groupRef(lessonCode, groupId);
+                    await runTransaction(db, async (tx) => {
+                        const d = (await tx.get(ref)).data();
+                        if (d.stage !== STAGES.FINISHED) return;
+                        tx.update(ref, { stage: STAGES.LOBBY, round: (d.round || 1) + 1, ...freshBoard(d.capacity || 4) });
+                    });
+                } catch (e) { alert(errMsg(e)); }
+                setBusy(false);
             };
 
             const isCorrect = groupData.isCorrect;
 
             return (
-                <div className="bg-white p-12 md:p-20 rounded-[4rem] text-center shadow-xl border-4 border-indigo-100">
+                <div className="bg-white p-10 md:p-20 rounded-[4rem] text-center shadow-xl border-4 border-indigo-100">
                     <h2 className={`text-5xl md:text-6xl font-black mb-12 font-jua tracking-tighter ${isCorrect ? 'text-emerald-500' : 'text-rose-500'}`}>
                         {isCorrect ? "🎉 정답입니다! (+10점)" : "😢 아쉽게도 틀렸습니다..."}
                     </h2>
-                    
+
                     <div className="flex flex-col md:flex-row justify-center gap-10 md:gap-24 mb-16 items-center">
                         <div className="bg-slate-50 p-10 rounded-[3rem] border-4 border-slate-100 shadow-inner">
                             <p className="text-slate-400 font-bold mb-6 uppercase tracking-widest text-sm">원본 데이터</p>
@@ -641,8 +989,8 @@
                             </div>
                         </div>
                     </div>
-                    <button onClick={next} className="bg-indigo-600 text-white px-16 py-6 rounded-[2.5rem] font-black text-3xl flex items-center justify-center gap-4 mx-auto shadow-xl hover:bg-indigo-700 transition-all active:scale-95"><Icon name="refresh-ccw" size={32} /> 다음 라운드 시작!</button>
-                    <p className="mt-8 text-slate-400 font-bold text-lg">※ 다음 판부터는 역할이 <span className="text-indigo-600">완전 랜덤</span>으로 바뀝니다!</p>
+                    <button onClick={next} disabled={busy} className="bg-indigo-600 text-white px-16 py-6 rounded-[2.5rem] font-black text-3xl flex items-center justify-center gap-4 mx-auto shadow-xl hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"><Icon name="refresh-ccw" size={32} /> 다음 라운드 시작!</button>
+                    <p className="mt-8 text-slate-400 font-bold text-lg">※ 다음 판에는 역할이 <span className="text-indigo-600">한 칸씩 돌아가며</span> 바뀝니다!</p>
                 </div>
             );
         }

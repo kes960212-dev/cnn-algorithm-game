@@ -1,0 +1,92 @@
+rules_version = '2';
+
+// AI 패턴 탐정단 - 프로덕션 보안 규칙
+// - 익명 로그인한 사용자만 읽기·쓰기 가능 (게임 페이지가 자동으로 익명 로그인함)
+// - 수업(lessons) 문서는 만든 선생님(ownerUid)만 고치거나 지울 수 있음
+// - 모둠(groups) 문서는 수업 참여자가 게임 진행용 필드만, 정해진 모양으로만 고칠 수 있음
+// - 그 밖의 모든 경로는 차단
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function lessonOwner(code) {
+      return get(/databases/$(database)/documents/lessons/$(code)).data.ownerUid == request.auth.uid;
+    }
+
+    function validLesson(d, code) {
+      return d.keys().hasOnly(['code', 'groupCount', 'createdAt', 'ownerUid'])
+        && d.code == code
+        && d.groupCount is int && d.groupCount >= 1 && d.groupCount <= 20
+        && d.ownerUid == request.auth.uid;
+    }
+
+    function optString(d, k, max) {
+      return !(k in d) || (d[k] is string && d[k].size() <= max);
+    }
+
+    function optList(d, k, max) {
+      return !(k in d) || (d[k] is list && d[k].size() <= max);
+    }
+
+    function validGroup(d, groupId) {
+      return d.keys().hasOnly([
+          'id', 'capacity', 'stage', 'round', 'score', 'seats', 'roleBySeat',
+          'imageData', 'horizScores', 'vertScores', 'horizDone', 'vertDone',
+          'category', 'intendedAnswer', 'finalGuess', 'isCorrect', 'members'
+        ])
+        && d.id == groupId
+        && d.capacity in [3, 4]
+        && d.stage in ['lobby', 'drawing', 'scanning', 'guessing', 'finished']
+        && d.round is int && d.round >= 1 && d.round <= 1000
+        && d.score is int && d.score >= 0 && d.score <= 10000
+        && d.imageData is list && d.imageData.size() == 25
+        && d.horizScores is list && d.horizScores.size() == 9
+        && d.vertScores is list && d.vertScores.size() == 9
+        && optList(d, 'seats', 4)
+        && optList(d, 'roleBySeat', 4)
+        && optString(d, 'category', 10)
+        && optString(d, 'intendedAnswer', 4)
+        && optString(d, 'finalGuess', 4);
+    }
+
+    // 학생이 하는 수정: 모둠 번호·정원은 못 바꾸고, 점수는 그대로이거나 한 번에 10점만 오를 수 있음
+    function validPlayerUpdate(groupId) {
+      let d = request.resource.data;
+      let old = resource.data;
+      return validGroup(d, groupId)
+        && d.capacity == old.capacity
+        && (d.score == old.score || d.score == old.score + 10);
+    }
+
+    match /lessons/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-Z0-9]{2,12}$')
+        && validLesson(request.resource.data, code);
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && validLesson(request.resource.data, code);
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+
+      match /groups/{groupId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && groupId.matches('^G[0-9]{1,2}$')
+          && lessonOwner(code)
+          && validGroup(request.resource.data, groupId);
+        allow update: if signedIn()
+          && (validPlayerUpdate(groupId)
+              || (lessonOwner(code) && validGroup(request.resource.data, groupId)));
+        allow delete: if signedIn() && lessonOwner(code);
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
